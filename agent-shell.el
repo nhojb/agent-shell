@@ -3374,11 +3374,15 @@ When NO-ERROR is non-nil, return nil and continue without error."
                                       (let ((char-start (map-elt region :char-start))
                                             (char-end (map-elt region :char-end))
                                             (max-preview-lines 5))
-                                        (agent-shell--get-numbered-region
-                                         :buffer buffer
-                                         :from char-start
-                                         :to char-end
-                                         :cap max-preview-lines)))))
+                                        (if (and (line-number-at-pos char-start)
+                                                 (line-number-at-pos char-end))
+                                            ;; Same line region? Avoid numbering.
+                                            (buffer-substring char-start char-end)
+                                          (agent-shell--get-numbered-region
+                                           :buffer buffer
+                                           :from char-start
+                                           :to char-end
+                                           :cap max-preview-lines))))))
                                (if numbered-preview
                                    (concat file-link "\n\n" numbered-preview)
                                  file-link))
