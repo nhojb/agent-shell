@@ -277,12 +277,12 @@ Returns an alist with all specified values."
 This function aggregates agents from OpenAI, Anthropic, Google,
 Goose, Cursor, and others."
   (list (agent-shell-anthropic-make-claude-code-config)
+        (agent-shell-openai-make-codex-config)
         (agent-shell-cursor-make-agent-config)
+        (agent-shell-droid-make-agent-config)
         (agent-shell-google-make-gemini-config)
         (agent-shell-goose-make-agent-config)
-        (agent-shell-droid-make-agent-config)
         (agent-shell-mistral-make-config)
-        (agent-shell-openai-make-codex-config)
         (agent-shell-opencode-make-agent-config)
         (agent-shell-qwen-make-agent-config)))
 
