@@ -1048,6 +1048,8 @@ If the buffer's file has changed, prompt the user to reload it."
                            ;; Prevent auto-insert-mode
                            ;; See issue #170
                            (let ((auto-insert nil))
+                             ;; Silence unused warning.
+                             (identity auto-insert)
                              (find-file-noselect path)))))
           (when (and dir (not (file-exists-p dir)))
             (make-directory dir t))
