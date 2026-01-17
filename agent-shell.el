@@ -127,7 +127,7 @@ returns the resolved path.  Set to nil to disable mapping."
   "Command prefix for executing commands in a container.
 
 When non-nil, both the agent command and shell commands will be
-executed using this runner. Can be a list of strings or a function
+executed using this runner.  Can be a list of strings or a function
 that takes a buffer and returns a list.
 
 Example for static devcontainer:
@@ -281,7 +281,7 @@ Assume screenshot file path will be appended to this list."
   "Create an agent configuration alist.
 
 Keyword arguments:
-- IDENTIFIER: Symbol identifying the agent type (e.g., \\='claude-code, \\='gemini-cli)
+- IDENTIFIER: Symbol identifying agent type (e.g., \\='claude-code)
 - MODE-LINE-NAME: Name to display in the mode line
 - WELCOME-FUNCTION: Function to call for welcome message
 - BUFFER-NAME: Name of the agent buffer
