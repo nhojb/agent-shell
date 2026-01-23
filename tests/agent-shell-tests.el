@@ -229,6 +229,30 @@
   ;; Test empty entries
   (should (equal (agent-shell--format-plan []) "")))
 
+(ert-deftest agent-shell--make-button-test ()
+  "Test `agent-shell--make-button' brackets in terminal mode."
+  ;; Graphical mode: spaces with box styling
+  (cl-letf (((symbol-function 'display-graphic-p)
+             (lambda (&optional _display) t)))
+    (should (equal (substring-no-properties
+                    (agent-shell--make-button
+                     :text "Allow (y)"
+                     :help "help"
+                     :kind 'permission
+                     :action #'ignore))
+                   " Allow (y) ")))
+
+  ;; Terminal mode: brackets
+  (cl-letf (((symbol-function 'display-graphic-p)
+             (lambda (&optional _display) nil)))
+    (should (equal (substring-no-properties
+                    (agent-shell--make-button
+                     :text "Allow (y)"
+                     :help "help"
+                     :kind 'permission
+                     :action #'ignore))
+                   "[ Allow (y) ]"))))
+
 (ert-deftest agent-shell--parse-file-mentions-test ()
   "Test agent-shell--parse-file-mentions function."
   ;; Simple @ mention

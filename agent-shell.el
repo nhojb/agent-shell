@@ -1644,8 +1644,11 @@ Returns propertized labels in :status and :title propertized."
 
 (cl-defun agent-shell--make-button (&key text help kind action keymap)
   "Make button with TEXT, HELP text, KIND, KEYMAP, and ACTION."
+  ;; Use [ ] brackets in TUI which cannot render the box border.
   (let ((button (propertize
-                 (format " %s " text)
+                 (if (display-graphic-p)
+                     (format " %s " text)
+                   (format "[ %s ]" text))
                  'font-lock-face '(:box t)
                  'help-echo help
                  'pointer 'hand
@@ -3384,17 +3387,24 @@ CHAR and OPTION are used for cursor sensor messages."
       ;;
       ;; For example, the "y" in:
       ;;
-      ;; [ Allow (y) ]
-      (put-text-property (- (length button) 3) (- (length button) 1)
-                         'agent-shell-permission-button t button)
-      (put-text-property (- (length button) 3) (- (length button) 1)
-                         'cursor-sensor-functions
-                         (list (lambda (_window _old-pos sensor-action)
-                                 (when (eq sensor-action 'entered)
-                                   (if char
-                                       (message "Press RET or %s to %s" char option)
-                                     (message "Press RET to %s" option)))))
-                         button))
+      ;; Graphical: " Allow (y) "
+      ;;
+      ;; Terminal: "[ Allow (y) ]"
+      ;;
+      ;; so adjust the offsets accordingly.
+      (let ((trailing (if (display-graphic-p) 2 3)))
+        (put-text-property (- (length button) (+ trailing 1))
+                           (- (length button) trailing)
+                           'agent-shell-permission-button t button)
+        (put-text-property (- (length button) (+ trailing 1))
+                           (- (length button) trailing)
+                           'cursor-sensor-functions
+                           (list (lambda (_window _old-pos sensor-action)
+                                   (when (eq sensor-action 'entered)
+                                     (if char
+                                         (message "Press RET or %s to %s" char option)
+                                       (message "Press RET to %s" option)))))
+                           button)))
     button))
 
 (defun agent-shell--make-permission-actions (acp-options)
