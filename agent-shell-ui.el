@@ -558,11 +558,12 @@ FACE when non-nil applies the specified face to the text."
                          text))
   (when face
     (add-text-properties 0 (length text)
-                         `(font-lock-face ,face)
-                         text)
-    (add-text-properties 0 (length text)
-                         `(face ,face)
+                         `(font-lock-face ,face
+                           face ,face)
                          text))
+  (add-text-properties 0 (length text)
+                       '(rear-nonsticky t)
+                       text)
   text)
 
 (defvar-local agent-shell-ui--isearch-opened-fragments nil

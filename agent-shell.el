@@ -2983,18 +2983,35 @@ Uses AGENT-CWD to shorten file paths where necessary."
     (mapconcat (lambda (file)
                  (when agent-cwd
                    (setq file (expand-file-name file agent-cwd)))
-                 (let ((text (concat "@" file)))
-                   (if-let ((image-display (agent-shell--load-image
-                                            :file-path file
-                                            :max-width 200)))
-                       ;; Propertize text to display the image
-                       (propertize text 'display image-display)
-                     ;; Not an image, insert as normal text
-                     (if (and agent-cwd (file-in-directory-p file agent-cwd))
-                         ;; File within project, shorten path.
-                         (propertize text 'display
-                                     (concat "@" (file-relative-name file agent-cwd)))
-                       text))))
+                 (if-let ((image-display (agent-shell--load-image
+                                          :file-path file
+                                          :max-width 200)))
+                     ;; Propertize text to display the image
+                     (agent-shell-ui-add-action-to-text
+                      (propertize file
+                                  'display image-display
+                                  'pointer 'hand)
+                      (lambda ()
+                        (interactive)
+                        (find-file file))
+                      (lambda ()
+                        (message "Press RET to open"))
+                      ;; No link face for image (no underline).
+                      nil)
+                   ;; Not an image, insert as normal text
+                   (agent-shell-ui-add-action-to-text
+                    (if (and agent-cwd (file-in-directory-p file agent-cwd))
+                        ;; File within project, shorten path.
+                        (propertize (file-relative-name file agent-cwd)
+                                    'pointer 'hand)
+                      (propertize file
+                                  'pointer 'hand))
+                    (lambda ()
+                      (interactive)
+                      (find-file file))
+                    (lambda ()
+                      (message "Press RET to open"))
+                    'link)))
                files
                "\n\n")))
 
