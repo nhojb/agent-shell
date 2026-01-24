@@ -517,7 +517,7 @@ always go to Evil modes if you need to with ~C-z~).
 | agent-shell-auggie-environment                | Environment variables for the Auggie client.                                    |
 | agent-shell-completion-mode-hook              | Hook run after entering or leaving ‘agent-shell-completion-mode’.               |
 | agent-shell-container-command-runner          | Command prefix for executing commands in a container.                           |
-| agent-shell-context-sources                   | Sources to consider when determining context.                                   |
+| agent-shell-context-sources                   | Sources to consider when determining M-x agent-shell automatic context.         |
 | agent-shell-cursor-command                    | Command and parameters for the Cursor agent client.                             |
 | agent-shell-cursor-environment                | Environment variables for the Cursor agent client.                              |
 | agent-shell-display-action                    | Display action for agent shell buffers.                                         |
@@ -645,7 +645,6 @@ always go to Evil modes if you need to with ~C-z~).
 | C-x x r         | agent-shell-rename-buffer                               | Rename current shell buffer.                                                  |
 |                 | agent-shell-reset-logs                                  | Reset all log buffers.                                                        |
 |                 | agent-shell-resume-pending-requests                     | Resume processing pending requests in the queue.                              |
-|                 | agent-shell-resume-session                              | Resume a previous session in the current shell.                               |
 |                 | agent-shell-run-all-tests                               | Run all agent-shell tests in batch mode.                                      |
 | M-r             | agent-shell-search-history                              | Search previous input history.                                                |
 |                 | agent-shell-send-current-file                           | Insert a file into `agent-shell'.                                             |
