@@ -63,7 +63,9 @@ the word, nil otherwise."
 (defun agent-shell--command-completion-at-point ()
   "Complete available commands after /."
   (when-let* ((bounds (agent-shell--completion-bounds "[:alnum:]_-" ?/))
-              (commands (map-elt agent-shell--state :available-commands))
+              (commands (with-current-buffer (agent-shell--shell-buffer
+                                              :no-error t :no-create t)
+                          (map-elt agent-shell--state :available-commands)))
               (descriptions (mapcar (lambda (c)
                                       (cons (map-elt c 'name)
                                             (map-elt c 'description)))
