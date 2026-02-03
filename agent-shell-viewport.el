@@ -227,16 +227,15 @@ Optionally set its PROMPT and RESPONSE."
     (erase-buffer)
     (when-let ((shell-buffer (agent-shell-viewport--shell-buffer)))
       (with-current-buffer shell-buffer
-        (unless (eq agent-shell-header-style 'graphical)
-          ;; Insert read-only newline at the point-min
-          ;; purely for display/layout purpose. This
-          ;; is only needed for non-graphical header.
-          (with-current-buffer viewport-buffer
-            (insert (propertize "\n"
-                                'read-only t
-                                'cursor-intangible t
-                                'front-sticky '(read-only cursor-intangible)
-                                'rear-nonsticky '(read-only cursor-intangible)))))))
+        ;; Insert read-only newline at the point-min
+        ;; purely for display/layout purpose, adding
+        ;; visual separation from the header.
+        (with-current-buffer viewport-buffer
+          (insert (propertize "\n"
+                              'read-only t
+                              'cursor-intangible t
+                              'front-sticky '(read-only cursor-intangible)
+                              'rear-nonsticky '(read-only cursor-intangible))))))
     (when prompt
       (insert
        (if (derived-mode-p 'agent-shell-viewport-view-mode)
