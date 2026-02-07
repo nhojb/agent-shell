@@ -713,7 +713,7 @@ Includes shells accessed via viewport buffers, preserving visited order."
                                           :shell-buffer (current-buffer))
                                          "Not in a shell viewport buffer")))
            (with-current-buffer viewport-buffer
-             (when (derived-mode-p 'agent-shell-viewport-view-mode)
+             (when (= (point-min) (point-max))
                (agent-shell-viewport-refresh)))
            (switch-to-buffer viewport-buffer)))
         (t

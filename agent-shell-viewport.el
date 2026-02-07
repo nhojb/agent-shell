@@ -358,7 +358,7 @@ Optionally set its PROMPT and RESPONSE."
     (agent-shell-viewport--initialize
      :prompt (car current)
      :response (cdr current))
-    (goto-char (point-min))
+    (goto-char (point-max))
     current))
 
 (defun agent-shell-viewport-next-item ()
