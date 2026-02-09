@@ -2303,8 +2303,9 @@ BINDINGS is a list of alists defining key bindings to display, each with:
                         (bindings-row-height (if (or bindings qualifier) text-height 0))
                         (bottom-padding text-height)
                         (total-height (+ icon-text-row-height bindings-row-height bottom-padding))
+                        (icon-x 5)
                         ;; Y positions for each row (baseline positions for text)
-                        (icon-y 0)
+                        (icon-y 10)
                         (icon-text-y text-height)
                         ;; Bindings positioned right after the bottom text (2 text lines) plus spacing
                         (bindings-y (+ (* 3 text-height) row-spacing))
@@ -2319,10 +2320,10 @@ BINDINGS is a list of alists defining key bindings to display, each with:
                    (when (and icon-filename image-type)
                      (svg-embed svg icon-filename
                                 image-type nil
-                                :x 0 :y icon-y :width image-width :height image-height))
+                                :x icon-x :y icon-y :width image-width :height image-height))
                    ;; Top text line
                    (svg--append svg (let ((text-node (dom-node 'text
-                                                               `((x . ,(+ image-width 10))
+                                                               `((x . ,(+ icon-x image-width 10))
                                                                  (y . ,icon-text-y)))))
                                       ;; Agent name
                                       (dom-append-child text-node
@@ -2367,7 +2368,7 @@ BINDINGS is a list of alists defining key bindings to display, each with:
                                       text-node))
                    ;; Bottom text line
                    (svg-text svg (string-remove-suffix "/" (abbreviate-file-name (map-elt header-model :directory)))
-                             :x (+ image-width 10) :y (+ icon-text-y text-height)
+                             :x (+ icon-x image-width 10) :y (+ icon-text-y text-height)
                              :fill (face-attribute 'font-lock-string-face :foreground))
                    ;; Bindings row (last row if bindings or qualifier present)
                    (when (or bindings qualifier)
