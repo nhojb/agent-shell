@@ -2288,6 +2288,7 @@ BINDINGS is a list of alists defining key bindings to display, each with:
            ;; |      | Bottom text line
            ;; +------+
            ;; [Qualifier] Bindings row (optional, last row)
+           ;;
            (let* ((cache-key (agent-shell--header-cache-key header-model))
                   (cached (progn
                             (unless agent-shell--header-cache
@@ -2300,7 +2301,8 @@ BINDINGS is a list of alists defining key bindings to display, each with:
                         (row-spacing 0)  ; Spacing between icon/text rows and bindings row
                         (icon-text-row-height image-height)
                         (bindings-row-height (if (or bindings qualifier) text-height 0))
-                        (total-height (+ icon-text-row-height bindings-row-height 10))
+                        (bottom-padding text-height)
+                        (total-height (+ icon-text-row-height bindings-row-height bottom-padding))
                         ;; Y positions for each row (baseline positions for text)
                         (icon-y 0)
                         (icon-text-y text-height)
