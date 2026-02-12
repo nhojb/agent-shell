@@ -191,21 +191,21 @@
   (dolist (test-case `(;; Graphical display mode
                        ( :graphic t
                          :homogeneous-expected
-                         ,(concat " pending  Update state initialization  \n"
+                         ,(concat " pending  Update state initialization\n"
                                   " pending  Update session initialization")
                          :mixed-expected
-                         ,(concat " pending      First task \n"
+                         ,(concat " pending      First task\n"
                                   " in progress  Second task\n"
-                                  " completed    Third task "))
+                                  " completed    Third task"))
                        ;; Terminal display mode
                        ( :graphic nil
                          :homogeneous-expected
-                         ,(concat "[pending] Update state initialization  \n"
+                         ,(concat "[pending] Update state initialization\n"
                                   "[pending] Update session initialization")
                          :mixed-expected
-                         ,(concat "[pending]     First task \n"
+                         ,(concat "[pending]     First task\n"
                                   "[in progress] Second task\n"
-                                  "[completed]   Third task "))))
+                                  "[completed]   Third task"))))
     (cl-letf (((symbol-function 'display-graphic-p)
                (lambda (&optional _display) (plist-get test-case :graphic))))
       ;; Test homogeneous statuses
@@ -573,7 +573,7 @@
                     (agent-shell--format-agent-capabilities capabilities))
                    (concat
                     "prompt  image and embedded context\n"
-                    "mcp     http and sse              "))))
+                    "mcp     http and sse"))))
 
   ;; Test with single capability per category (no comma)
   (let ((capabilities '((promptCapabilities (image . t))
@@ -581,14 +581,14 @@
     (should (equal (substring-no-properties
                     (agent-shell--format-agent-capabilities capabilities))
                    (concat "prompt  image\n"
-                           "mcp     http "))))
+                           "mcp     http"))))
 
   ;; Test with top-level boolean capability (loadSession)
   (let ((capabilities '((loadSession . t)
                         (promptCapabilities (image . t) (embeddedContext . t)))))
     (should (equal (substring-no-properties
                     (agent-shell--format-agent-capabilities capabilities))
-                   (concat "load session                            \n"
+                   (concat "load session\n"
                            "prompt        image and embedded context"))))
 
   ;; Test with all capabilities disabled (should return empty string)
