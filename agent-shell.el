@@ -3142,16 +3142,47 @@ Must provide ON-SESSION-INIT (lambda ())."
      :shell-buffer shell-buffer
      :on-session-init on-session-init)))
 
+(defun agent-shell--format-session-date (iso-timestamp)
+  "Format ISO-TIMESTAMP as a human-friendly date string.
+
+Returns \"Today, HH:MM\", \"Yesterday, HH:MM\", \"Mon DD, HH:MM\"
+for the current year, or \"Mon DD, YYYY\" for other years."
+  (condition-case nil
+      (let* ((time (date-to-time iso-timestamp))
+             (now (current-time))
+             (decoded-now (decode-time now))
+             (today-start (encode-time 0 0 0
+                                       (decoded-time-day decoded-now)
+                                       (decoded-time-month decoded-now)
+                                       (decoded-time-year decoded-now)))
+             (yesterday-start (time-subtract today-start (seconds-to-time (* 24 60 60))))
+             (current-year (decoded-time-year (decode-time now)))
+             (timestamp-year (decoded-time-year (decode-time time))))
+        (cond
+         ((not (time-less-p time today-start))
+          (format-time-string "Today, %H:%M" time))
+         ((not (time-less-p time yesterday-start))
+          (format-time-string "Yesterday, %H:%M" time))
+         ((= timestamp-year current-year)
+          (format-time-string "%b %d, %H:%M" time))
+         (t
+          (format-time-string "%b %d, %Y" time))))
+    (error iso-timestamp)))
+
 (defun agent-shell--session-choice-label (session)
   "Return completion label for SESSION."
-  (let* ((session-id (or (map-elt session 'sessionId)
-                         "unknown-session"))
-         (title (or (map-elt session 'title)
+  (let* ((title (or (map-elt session 'title)
                     "Untitled"))
+         (title (if (> (length title) 50)
+                    (concat (substring title 0 47) "...")
+                  title))
          (updated-at (or (map-elt session 'updatedAt)
                          (map-elt session 'createdAt)
-                         "unknown-time")))
-    (format "%s | %s | %s" title updated-at session-id)))
+                         "unknown-time"))
+         (date-str (propertize (agent-shell--format-session-date updated-at)
+                               'face 'font-lock-comment-face))
+         (padding (make-string (max 2 (- 52 (length title))) ?\s)))
+    (concat title padding date-str)))
 
 (defconst agent-shell--start-new-session-choice "Start a new session"
   "Label for creating a new session from the session picker.")
