@@ -976,6 +976,28 @@ code block content with spaces
         (should session-init-called)
         (should (equal (map-nested-elt agent-shell--state '(:session :id)) "new-session-456"))))))
 
+(ert-deftest agent-shell--format-session-date-test ()
+  "Test `agent-shell--format-session-date' humanizes timestamps."
+  ;; Today
+  (let* ((now (current-time))
+         (today-iso (format-time-string "%Y-%m-%dT10:30:00Z" now)))
+    (should (equal (agent-shell--format-session-date today-iso)
+                   "Today, 10:30")))
+  ;; Yesterday
+  (let* ((yesterday (time-subtract (current-time) (* 24 60 60)))
+         (yesterday-iso (format-time-string "%Y-%m-%dT15:45:00Z" yesterday)))
+    (should (equal (agent-shell--format-session-date yesterday-iso)
+                   "Yesterday, 15:45")))
+  ;; Same year, older
+  (should (string-match-p "^[A-Z][a-z]+ [0-9]+, [0-9]+:[0-9]+"
+                           (agent-shell--format-session-date "2026-01-05T09:00:00Z")))
+  ;; Different year
+  (should (string-match-p "^[A-Z][a-z]+ [0-9]+, [0-9]\\{4\\}"
+                           (agent-shell--format-session-date "2025-06-15T12:00:00Z")))
+  ;; Invalid input falls back gracefully
+  (should (equal (agent-shell--format-session-date "not-a-date")
+                 "not-a-date")))
+
 (ert-deftest agent-shell--prompt-select-session-to-load-test ()
   "Test `agent-shell--prompt-select-session-to-load' choices."
   (let* ((session-a '((sessionId . "session-1")
@@ -999,8 +1021,8 @@ code block content with spaces
 
 (ert-deftest agent-shell--session-picker-sort-test ()
   "Test `agent-shell--session-picker-sort' keeps the new-session option first."
-  (let* ((session-a-label "First | 2026-01-19T14:00:00Z | session-1")
-         (session-b-label "Second | 2026-01-20T16:00:00Z | session-2")
+  (let* ((session-a-label "First  Jan 19, 14:00")
+         (session-b-label "Second  Jan 20, 16:00")
          (candidates (list session-a-label
                            agent-shell--start-new-session-choice
                            session-b-label)))
