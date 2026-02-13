@@ -3034,7 +3034,7 @@ ON-SUCCESS is called with no args after successful delete."
      :state (agent-shell--state)
      :block-id "session_delete"
      :label-left (propertize "Deleting session" 'font-lock-face 'font-lock-doc-markup-face)
-     :body (format "Requesting deletion for %s..." (substring-no-properties acp-session-id))
+     :body (format "Requesting deletion for %s..." acp-session-id)
      :append t))
   (acp-send-request
    :client (map-elt (agent-shell--state) :client)
@@ -3078,15 +3078,13 @@ prompting for a session to pick (still asks for confirmation)."
       (let* ((current-session-id (map-nested-elt (agent-shell--state) '(:session :id))))
         (cond
          ((and force-current current-session-id)
-          (when (y-or-n-p (format "Delete current session %s? "
-                                  (substring-no-properties current-session-id)))
+          (when (y-or-n-p (format "Delete current session %s? " current-session-id))
             (agent-shell--delete-session-by-id
              :shell-buffer shell-buffer
              :acp-session-id current-session-id
              :on-success (lambda ()
                            (agent-shell--clear-session-state)
-                           (message "Deleted session %s"
-                                    (substring-no-properties current-session-id))))))
+                           (message "Deleted session %s" current-session-id)))))
          ((map-elt (agent-shell--state) :supports-session-list)
           (with-current-buffer (map-elt (agent-shell--state) :buffer)
             (agent-shell--update-fragment
@@ -3108,8 +3106,7 @@ prompting for a session to pick (still asks for confirmation)."
                            (cond
                             ((not acp-session-id)
                              (message "No session selected"))
-                            ((not (y-or-n-p (format "Delete session %s? "
-                                                    (substring-no-properties acp-session-id))))
+                            ((not (y-or-n-p (format "Delete session %s? " acp-session-id)))
                              (message "Cancelled"))
                             (t
                              (agent-shell--delete-session-by-id
@@ -3117,23 +3114,19 @@ prompting for a session to pick (still asks for confirmation)."
                               :acp-session-id acp-session-id
                               :on-success (lambda ()
                                             (when (and current-session-id
-                                                       (equal (substring-no-properties acp-session-id)
-                                                              (substring-no-properties current-session-id)))
+                                                       (equal acp-session-id current-session-id))
                                               (agent-shell--clear-session-state))
-                                            (message "Deleted session %s"
-                                                     (substring-no-properties acp-session-id))))))))
+                                            (message "Deleted session %s" acp-session-id)))))))
            :on-failure (agent-shell--make-error-handler
                         :state (agent-shell--state) :shell-buffer shell-buffer)))
          (current-session-id
-          (when (y-or-n-p (format "Delete current session %s? "
-                                  (substring-no-properties current-session-id)))
+          (when (y-or-n-p (format "Delete current session %s? " current-session-id))
             (agent-shell--delete-session-by-id
              :shell-buffer shell-buffer
              :acp-session-id current-session-id
              :on-success (lambda ()
                            (agent-shell--clear-session-state)
-                           (message "Deleted session %s"
-                                    (substring-no-properties current-session-id))))))
+                           (message "Deleted session %s" current-session-id)))))
          (t
           (user-error "No session to delete")))))))
 
@@ -3271,8 +3264,7 @@ prompting for a session to pick (still asks for confirmation)."
                          (agent-shell--update-fragment
                           :state (agent-shell--state)
                           :block-id "starting"
-                          :body (format "\n\nLoading session %s..."
-                                        (substring-no-properties acp-session-id))
+                          :body (format "\n\nLoading session %s..." acp-session-id)
                           :append t)
                          (acp-send-request
                           :client (map-elt (agent-shell--state) :client)
