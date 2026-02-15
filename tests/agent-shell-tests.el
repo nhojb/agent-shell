@@ -191,21 +191,21 @@
   (dolist (test-case `(;; Graphical display mode
                        ( :graphic t
                          :homogeneous-expected
-                         ,(concat " pending  Update state initialization\n"
-                                  " pending  Update session initialization")
+                         ,(concat " pending   Update state initialization\n"
+                                  " pending   Update session initialization")
                          :mixed-expected
-                         ,(concat " pending      First task\n"
-                                  " in progress  Second task\n"
-                                  " completed    Third task"))
+                         ,(concat " pending       First task\n"
+                                  " in progress   Second task\n"
+                                  " completed     Third task"))
                        ;; Terminal display mode
                        ( :graphic nil
                          :homogeneous-expected
-                         ,(concat "[pending] Update state initialization\n"
-                                  "[pending] Update session initialization")
+                         ,(concat "[pending]  Update state initialization\n"
+                                  "[pending]  Update session initialization")
                          :mixed-expected
-                         ,(concat "[pending]     First task\n"
-                                  "[in progress] Second task\n"
-                                  "[completed]   Third task"))))
+                         ,(concat "[pending]      First task\n"
+                                  "[in progress]  Second task\n"
+                                  "[completed]    Third task"))))
     (cl-letf (((symbol-function 'display-graphic-p)
                (lambda (&optional _display) (plist-get test-case :graphic))))
       ;; Test homogeneous statuses
@@ -976,6 +976,213 @@ code block content with spaces
                (lambda () agent-shell--state)))
       ;; Should not error when no subscriptions exist
       (agent-shell--emit-event :event 'init-client))))
+
+(ert-deftest agent-shell--initiate-session-prefers-list-and-load-when-supported ()
+  "Test `agent-shell--initiate-session' prefers session/list + session/load."
+  (with-temp-buffer
+    (let* ((agent-shell-session-load-strategy 'latest)
+           (requests '())
+           (session-init-called nil)
+           (state `((:buffer . ,(current-buffer))
+                    (:client . test-client)
+                    (:session . ((:id . nil)
+                                 (:mode-id . nil)
+                                 (:modes . nil)))
+                    (:supports-session-list . t)
+                    (:supports-session-load . t))))
+      (setq-local agent-shell--state state)
+      (cl-letf (((symbol-function 'agent-shell--state)
+                 (lambda () agent-shell--state))
+                ((symbol-function 'agent-shell--update-fragment)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'agent-shell--update-header-and-mode-line)
+                 (lambda () nil))
+                ((symbol-function 'agent-shell-cwd)
+                 (lambda () "/tmp"))
+                ((symbol-function 'agent-shell--resolve-path)
+                 (lambda (path) path))
+                ((symbol-function 'agent-shell--mcp-servers)
+                 (lambda () []))
+                ((symbol-function 'acp-send-request)
+                 (lambda (&rest args)
+                   (push args requests)
+                   (let* ((request (plist-get args :request))
+                          (method (map-elt request :method)))
+                     (pcase method
+                       ("session/list"
+                        (funcall (plist-get args :on-success)
+                                 '((sessions . [((sessionId . "session-123")
+                                                 (cwd . "/tmp")
+                                                 (title . "Recent session"))]))))
+                       ("session/load"
+                        (funcall (plist-get args :on-success)
+                                 '((modes (currentModeId . "default")
+                                          (availableModes . [((id . "default")
+                                                              (name . "Default")
+                                                              (description . "Default mode"))]))
+                                   (models (currentModelId . "gpt-5")
+                                           (availableModels . [((modelId . "gpt-5")
+                                                                (name . "GPT-5")
+                                                                (description . "Test model"))])))))
+                       (_ (error "Unexpected method: %s" method)))))))
+        (agent-shell--initiate-session
+         :shell-buffer (current-buffer)
+         :on-session-init (lambda ()
+                            (setq session-init-called t)))
+        (let ((ordered-requests (nreverse requests)))
+          (should (equal (mapcar (lambda (req)
+                                   (map-elt (plist-get req :request) :method))
+                                 ordered-requests)
+                         '("session/list" "session/load")))
+          (let* ((load-request (plist-get (nth 1 ordered-requests) :request))
+                 (load-params (map-elt load-request :params)))
+            (should (equal (map-elt load-params 'sessionId) "session-123"))
+            (should (equal (map-elt load-params 'cwd) "/tmp"))))
+        (should session-init-called)
+        (should (equal (map-nested-elt agent-shell--state '(:session :id)) "session-123"))))))
+
+(ert-deftest agent-shell--initiate-session-falls-back-to-new-on-list-failure ()
+  "Test `agent-shell--initiate-session' falls back to session/new on list failure."
+  (with-temp-buffer
+    (let* ((agent-shell-session-load-strategy 'latest)
+           (requests '())
+           (session-init-called nil)
+           (state `((:buffer . ,(current-buffer))
+                    (:client . test-client)
+                    (:session . ((:id . nil)
+                                 (:mode-id . nil)
+                                 (:modes . nil)))
+                    (:supports-session-list . t)
+                    (:supports-session-load . t))))
+      (setq-local agent-shell--state state)
+      (cl-letf (((symbol-function 'agent-shell--state)
+                 (lambda () agent-shell--state))
+                ((symbol-function 'agent-shell--update-fragment)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'agent-shell--update-header-and-mode-line)
+                 (lambda () nil))
+                ((symbol-function 'agent-shell-cwd)
+                 (lambda () "/tmp"))
+                ((symbol-function 'agent-shell--resolve-path)
+                 (lambda (path) path))
+                ((symbol-function 'agent-shell--mcp-servers)
+                 (lambda () []))
+                ((symbol-function 'acp-send-request)
+                 (lambda (&rest args)
+                   (push args requests)
+                   (let* ((request (plist-get args :request))
+                          (method (map-elt request :method)))
+                     (pcase method
+                       ("session/list"
+                        (funcall (plist-get args :on-failure)
+                                 '((code . -32601)
+                                   (message . "Method not found"))
+                                 nil))
+                       ("session/new"
+                        (funcall (plist-get args :on-success)
+                                 '((sessionId . "new-session-456"))))
+                       (_ (error "Unexpected method: %s" method)))))))
+        (agent-shell--initiate-session
+         :shell-buffer (current-buffer)
+         :on-session-init (lambda ()
+                            (setq session-init-called t)))
+        (let ((ordered-requests (nreverse requests)))
+          (should (equal (mapcar (lambda (req)
+                                   (map-elt (plist-get req :request) :method))
+                                 ordered-requests)
+                         '("session/list" "session/new"))))
+        (should session-init-called)
+        (should (equal (map-nested-elt agent-shell--state '(:session :id)) "new-session-456"))))))
+
+(ert-deftest agent-shell--format-session-date-test ()
+  "Test `agent-shell--format-session-date' humanizes timestamps."
+  ;; Today
+  (let* ((now (current-time))
+         (today-iso (format-time-string "%Y-%m-%dT10:30:00Z" now)))
+    (should (equal (agent-shell--format-session-date today-iso)
+                   "Today, 10:30")))
+  ;; Yesterday
+  (let* ((yesterday (time-subtract (current-time) (* 24 60 60)))
+         (yesterday-iso (format-time-string "%Y-%m-%dT15:45:00Z" yesterday)))
+    (should (equal (agent-shell--format-session-date yesterday-iso)
+                   "Yesterday, 15:45")))
+  ;; Same year, older
+  (should (string-match-p "^[A-Z][a-z]+ [0-9]+, [0-9]+:[0-9]+"
+                           (agent-shell--format-session-date "2026-01-05T09:00:00Z")))
+  ;; Different year
+  (should (string-match-p "^[A-Z][a-z]+ [0-9]+, [0-9]\\{4\\}"
+                           (agent-shell--format-session-date "2025-06-15T12:00:00Z")))
+  ;; Invalid input falls back gracefully
+  (should (equal (agent-shell--format-session-date "not-a-date")
+                 "not-a-date")))
+
+(ert-deftest agent-shell--prompt-select-session-test ()
+  "Test `agent-shell--prompt-select-session' choices."
+  (let* ((noninteractive t)
+         (session-a '((sessionId . "session-1")
+                      (title . "First")
+                      (cwd . "/home/user/project-a")
+                      (updatedAt . "2026-01-19T14:00:00Z")))
+         (session-b '((sessionId . "session-2")
+                      (title . "Second")
+                      (cwd . "/home/user/project-b")
+                      (updatedAt . "2026-01-20T16:00:00Z")))
+         (sessions (list session-a session-b)))
+    ;; noninteractive falls back to (car acp-sessions)
+    (should (equal (agent-shell--prompt-select-session sessions)
+                   session-a))))
+
+(ert-deftest agent-shell--prompt-select-session-nil-sessions-test ()
+  "Test `agent-shell--prompt-select-session' returns nil for empty sessions."
+  (should-not (agent-shell--prompt-select-session nil)))
+
+(ert-deftest agent-shell--initiate-session-strategy-new-skips-list-load ()
+  "Test `agent-shell--initiate-session' skips list/load when strategy is `new'."
+  (with-temp-buffer
+    (let* ((agent-shell-session-load-strategy 'new)
+           (requests '())
+           (session-init-called nil)
+           (state `((:buffer . ,(current-buffer))
+                    (:client . test-client)
+                    (:session . ((:id . nil)
+                                 (:mode-id . nil)
+                                 (:modes . nil)))
+                    (:supports-session-list . t)
+                    (:supports-session-load . t))))
+      (setq-local agent-shell--state state)
+      (cl-letf (((symbol-function 'agent-shell--state)
+                 (lambda () agent-shell--state))
+                ((symbol-function 'agent-shell--update-fragment)
+                 (lambda (&rest _args) nil))
+                ((symbol-function 'agent-shell--update-header-and-mode-line)
+                 (lambda () nil))
+                ((symbol-function 'agent-shell-cwd)
+                 (lambda () "/tmp"))
+                ((symbol-function 'agent-shell--resolve-path)
+                 (lambda (path) path))
+                ((symbol-function 'agent-shell--mcp-servers)
+                 (lambda () []))
+                ((symbol-function 'acp-send-request)
+                 (lambda (&rest args)
+                   (push args requests)
+                   (let* ((request (plist-get args :request))
+                          (method (map-elt request :method)))
+                     (pcase method
+                       ("session/new"
+                        (funcall (plist-get args :on-success)
+                                 '((sessionId . "new-session-789"))))
+                       (_ (error "Unexpected method: %s" method)))))))
+        (agent-shell--initiate-session
+         :shell-buffer (current-buffer)
+         :on-session-init (lambda ()
+                            (setq session-init-called t)))
+        (let ((ordered-requests (nreverse requests)))
+          (should (equal (mapcar (lambda (req)
+                                   (map-elt (plist-get req :request) :method))
+                                 ordered-requests)
+                         '("session/new"))))
+        (should session-init-called)
+        (should (equal (map-nested-elt agent-shell--state '(:session :id)) "new-session-789"))))))
 
 (provide 'agent-shell-tests)
 ;;; agent-shell-tests.el ends here
