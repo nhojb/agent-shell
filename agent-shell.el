@@ -4680,7 +4680,8 @@ Returns an alist with insertion details or nil otherwise:
   (let* ((shell-buffer (or shell-buffer
                            (agent-shell--shell-buffer :no-create t))))
     (if (with-current-buffer shell-buffer
-          (map-nested-elt agent-shell--state '(:session :id)))
+          (or (map-nested-elt agent-shell--state '(:session :id))
+              (eq agent-shell-session-strategy 'new-deferred)))
         ;; Displaying before with-current-buffer below
         ;; ensures window is selected, thus window-point
         ;; is also updated after insertion.
