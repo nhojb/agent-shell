@@ -4392,23 +4392,33 @@ MESSAGE-TEXT: Optional message to display after sending the response."
               :request-id request-id
               :cancelled cancelled
               :option-id option-id))
-  ;; Hide permission after sending response.
-  ;; block-id must be the same as the one used as
-  ;; agent-shell--update-fragment param by "session/request_permission".
-  (agent-shell--delete-fragment :state state :block-id (format "permission-%s" tool-call-id))
-  (map-put! state :tool-calls
-            (map-delete (map-elt state :tool-calls) tool-call-id))
-  (agent-shell--emit-event
-   :event 'permission-response
-   :data (list (cons :request-id request-id)
-               (cons :tool-call-id tool-call-id)
-               (cons :option-id option-id)
-               (cons :cancelled cancelled)))
-  (when message-text
-    (message "%s" message-text))
-  ;; Jump to any remaining permission buttons, or go to end of buffer.
-  (or (agent-shell-jump-to-latest-permission-button-row)
-      (goto-char (point-max))))
+  ;; Ensure in the shell buffer for state operations, as this
+  ;; function may be invoked from a viewport buffer.
+  (with-current-buffer (map-elt state :buffer)
+    ;; Hide permission after sending response.
+    ;; block-id must be the same as the one used as
+    ;; agent-shell--update-fragment param by "session/request_permission".
+    (agent-shell--delete-fragment :state state :block-id (format "permission-%s" tool-call-id))
+    (map-put! state :tool-calls
+              (map-delete (map-elt state :tool-calls) tool-call-id))
+    (agent-shell--emit-event
+     :event 'permission-response
+     :data (list (cons :request-id request-id)
+                 (cons :tool-call-id tool-call-id)
+                 (cons :option-id option-id)
+                 (cons :cancelled cancelled)))
+    (when message-text
+      (message "%s" message-text))
+    ;; Jump to any remaining permission buttons, or go to end of buffer.
+    (or (agent-shell-jump-to-latest-permission-button-row)
+        (goto-char (point-max)))
+    (when-let (((map-elt state :buffer))
+               (viewport-buffer (agent-shell-viewport--buffer
+                                 :shell-buffer (map-elt state :buffer)
+                                 :existing-only t)))
+      (with-current-buffer viewport-buffer
+        (or (agent-shell-jump-to-latest-permission-button-row)
+            (goto-char (point-max)))))))
 
 (cl-defun agent-shell--resolve-permission-choice-to-action (&key choice actions)
   "Resolve `agent-shell-diff' CHOICE to permission action from ACTIONS.
