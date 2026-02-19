@@ -2065,7 +2065,7 @@ Returns propertized labels in :status and :title propertized."
                (agent-shell--status-label (map-elt entry 'status)))
              (lambda (entry)
                (map-elt entry 'content)))
-   :separator "  "
+   :separator " "
    :joiner "\n"))
 
 (cl-defun agent-shell--make-button (&key text help kind action keymap)
