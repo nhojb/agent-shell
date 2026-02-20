@@ -2097,6 +2097,58 @@ Returns propertized labels in :status and :title propertized."
                  'button kind)))
     button))
 
+(cl-defun agent-shell--make-expandable-text (&key text (button-text "more..."))
+  "Make expandable TEXT.
+
+If TEXT is singled lined, return TEXT.
+
+\"Single-lined text\"
+
+If TEXT is multipled, return with expandable button.
+
+\"Multi-lined text [more...]\"
+
+BUTTON-TEXT is the text for the expand button (default \"more...\").
+It can be propertized to carry additional text properties."
+  (if (not (string-match-p "\n" text))
+      text
+    (let* ((id (gensym "expandable-text-"))
+           (first-line (substring text 0 (string-match "\n" text)))
+           (rest (substring text (match-end 0)))
+           (expand (lambda ()
+                     (interactive)
+                     (let ((inhibit-read-only t))
+                       (save-excursion
+                         ;; Reveal hidden text.
+                         (goto-char (point-min))
+                         (let ((match (text-property-search-forward
+                                       'agent-shell-expandable id t)))
+                           (when match
+                             (remove-list-of-text-properties
+                              (prop-match-beginning match)
+                              (prop-match-end match)
+                              '(invisible))))
+                         ;; Hide button.
+                         (goto-char (point-min))
+                         (let ((match (text-property-search-forward
+                                       'agent-shell-expandable-button id t)))
+                           (when match
+                             (put-text-property
+                              (prop-match-beginning match)
+                              (prop-match-end match)
+                              'invisible t)))))))
+           (button (propertize
+                    (concat " " (agent-shell--make-button
+                                 :text button-text
+                                 :help "Show full text"
+                                 :kind 'expandable
+                                 :action expand))
+                    'agent-shell-expandable-button id))
+           (hidden (propertize (concat "\n" rest)
+                               'invisible t
+                               'agent-shell-expandable id)))
+      (concat first-line button hidden))))
+
 (defun agent-shell--add-text-properties (string &rest properties)
   "Add text PROPERTIES to entire STRING and return the propertized string.
 PROPERTIES should be a plist of property-value pairs."
@@ -4305,12 +4357,7 @@ For example:
                    map))
          (title (let* ((title (map-nested-elt request '(params toolCall title)))
                        (command (agent-shell--tool-call-command-to-string
-                                 (map-nested-elt request '(params toolCall rawInput command))))
-                       (command-first-line (when (and (stringp command)
-                                                      (not (string-empty-p command)))
-                                             (if (string-match "\n" command)
-                                                 (concat (substring command 0 (match-beginning 0)) "...")
-                                               command))))
+                                 (map-nested-elt request '(params toolCall rawInput command)))))
                   ;; Some agents don't include the command in the
                   ;; permission/tool call title, so it's hard to know
                   ;; what the permission is actually allowing.
@@ -4320,7 +4367,7 @@ For example:
                            (not (string-empty-p command))
                            (string-match-p (regexp-quote command) title))
                       title
-                    (or command-first-line title))))
+                    (or command title))))
          (diff-button (when diff
                         (agent-shell--make-permission-button
                          :text "View (v)"
@@ -4351,9 +4398,10 @@ For example:
             (propertize agent-shell-permission-icon
                         'font-lock-face 'warning)
             (if title
-                (propertize
-                 (format "\n\n\n    %s" title)
-                 'font-lock-face 'comint-highlight-input)
+                (format "\n\n\n    %s"
+                        (agent-shell--make-expandable-text
+                         :text (propertize title 'font-lock-face 'comint-highlight-input)
+                         :button-text (propertize "more..." 'agent-shell-permission-button t)))
               "")
             (if diff-button
                 (concat diff-button " ")
