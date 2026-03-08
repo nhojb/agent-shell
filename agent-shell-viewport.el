@@ -353,7 +353,7 @@ Optionally set its PROMPT and RESPONSE."
     ;; View mode
     (if (or (derived-mode-p 'agent-shell-viewport-view-mode)
             (with-current-buffer shell-buffer
-              (not (shell-maker-history))))
+              (not (shell-maker-history-position))))
         (bury-buffer)
       ;; Edit mode
       (when (or (string-empty-p (string-trim (buffer-string)))
@@ -369,7 +369,7 @@ Optionally set its PROMPT and RESPONSE."
   (unless (derived-mode-p 'agent-shell-viewport-edit-mode)
     (user-error "Not in a prompt compose buffer"))
   (unless (with-current-buffer (agent-shell-viewport--shell-buffer)
-            (shell-maker-history))
+            (shell-maker-history-position))
     (user-error "No items in history"))
   (setq agent-shell-viewport--compose-snapshot
         `((:content . ,(buffer-string))
@@ -570,7 +570,7 @@ buffer from the snapshot and switch to edit mode."
         (pos (agent-shell-viewport--position :force-refresh t)))
     ;; Check if at last position going forward with a snapshot to restore
     (if (and (not backwards) snapshot pos
-             (= (car pos) (cdr pos)))
+             (= (map-elt pos :current) (map-elt pos :total)))
         (progn
           (agent-shell-viewport-edit-mode)
           (agent-shell-viewport--initialize)
@@ -648,7 +648,7 @@ buffer from the snapshot and switch to edit mode."
 
 ;; Continuously fetching position can get expensive. Cache it.
 (defvar-local agent-shell-viewport--position-cache nil
-  "Cached position value (CURRENT . TOTAL).")
+  "Cached position alist with :current and :total.")
 
 (cl-defun agent-shell-viewport--position (&key force-refresh)
   "Return the position in history of the shell buffer.
@@ -657,17 +657,8 @@ When FORCE-REFRESH is non-nil, recalculate and update cache."
   (agent-shell-viewport--ensure-buffer)
   (if (and (not force-refresh) agent-shell-viewport--position-cache)
       agent-shell-viewport--position-cache
-    (let* ((shell-buffer (agent-shell-viewport--shell-buffer))
-           (current (with-current-buffer shell-buffer
-                      (shell-maker--command-and-response-at-point)))
-           (history (with-current-buffer shell-buffer
-                      (shell-maker-history)))
-           (pos (seq-position history current))
-           (position (cond ((and current history pos)
-                            (cons (1+ pos) (length history)))
-                           (history
-                            (cons (1+ (length history))
-                                  (1+ (length history)))))))
+    (let ((position (with-current-buffer (agent-shell-viewport--shell-buffer)
+                      (shell-maker-history-position))))
       (setq agent-shell-viewport--position-cache position)
       position)))
 
@@ -721,8 +712,8 @@ VIEWPORT-BUFFER is the viewport buffer to check."
 Automatically determines qualifier and bindings based on current major mode."
   (agent-shell-viewport--ensure-buffer)
   (let* ((pos (or (agent-shell-viewport--position)
-                  (cons 1 1)))
-         (pos-label (format "%d/%d" (car pos) (cdr pos)))
+                  (list (cons :current 1) (cons :total 1))))
+         (pos-label (format "%d/%d" (map-elt pos :current) (map-elt pos :total)))
          (qualifier (cond
                      ((agent-shell-viewport--busy-p)
                       (format "[%s][Busy]" pos-label))
