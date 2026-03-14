@@ -4,6 +4,8 @@
 (require 'agent-shell)
 (require 'agent-shell-openai)
 
+;;; Code:
+
 (ert-deftest agent-shell-openai-default-model-id-test ()
   "Test that Codex config exposes default model id."
   (let ((default-model-id-fn
