@@ -1436,7 +1436,7 @@ COMMAND, when present, may be a shell command string or an argv vector."
            (if (not (agent-shell--active-requests-p state))
                (message "%s %s (stale, consider reporting to ACP agent): %s"
                         agent-shell-thought-process-icon
-                        (propertize "Thought process" 'face font-lock-doc-markup-face)
+                        (propertize "Thinking" 'face font-lock-doc-markup-face)
                         (truncate-string-to-width (map-nested-elt acp-notification '(params update content text)) 100))
              (unless (equal (map-elt state :last-entry-type)
                             "agent_thought_chunk")
@@ -1455,7 +1455,7 @@ COMMAND, when present, may be a shell command string or an argv vector."
               :label-left  (concat
                             agent-shell-thought-process-icon
                             " "
-                            (propertize "Thought process" 'font-lock-face font-lock-doc-markup-face))
+                            (propertize "Thinking" 'font-lock-face font-lock-doc-markup-face))
               :body (map-nested-elt acp-notification '(params update content text))
               :append (equal (map-elt state :last-entry-type)
                              "agent_thought_chunk")
