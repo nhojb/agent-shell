@@ -1497,7 +1497,7 @@ COMMAND, when present, may be a shell command string or an argv vector."
              (map-put! state :last-entry-type "agent_message_chunk")))
           ((equal (map-nested-elt acp-notification '(params update sessionUpdate)) "user_message_chunk")
            ;; Only handle user_message_chunks when there's an active session/load
-           ;; or session/pushPrompt to avoid inserting a redundant shell prompt
+           ;; or session/push to avoid inserting a redundant shell prompt
            ;; with the existing user submission.
            (when (seq-find (lambda (r)
                              (member (map-elt r :method)
@@ -1674,8 +1674,8 @@ COMMAND, when present, may be a shell command string or an argv vector."
            (agent-shell--update-header-and-mode-line)
            ;; Note: This is session-level state, no need to set :last-entry-type
            nil)
-          ((equal (map-nested-elt acp-notification '(params update sessionUpdate)) "end_of_session_push_prompt")
-           (agent-shell-experimental--on-end-of-push-prompt
+          ((equal (map-nested-elt acp-notification '(params update sessionUpdate)) "session_push_end")
+           (agent-shell-experimental--on-session-push-end
             :state state
             :on-finished (lambda ()
                            (shell-maker-finish-output :config shell-maker--config
@@ -1779,15 +1779,8 @@ COMMAND, when present, may be a shell command string or an argv vector."
          (agent-shell--on-fs-write-text-file-request
           :state state
           :acp-request acp-request))
-        ((equal (map-elt acp-request 'method) "session/pushPrompt")
-         ;; Remove trailing empty shell prompt before push content.
-         (when-let* ((comint-last-prompt)
-                     (prompt-start (car comint-last-prompt))
-                     (prompt-end (cdr comint-last-prompt))
-                     ((= (marker-position prompt-end) (point-max)))
-                     (inhibit-read-only t))
-           (delete-region (marker-position prompt-start) (point-max)))
-         (agent-shell-experimental--on-push-prompt-request
+        ((equal (map-elt acp-request 'method) "session/push")
+         (agent-shell-experimental--on-session-push-request
           :state state
           :acp-request acp-request))
         (t

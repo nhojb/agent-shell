@@ -24,9 +24,9 @@
 ;;
 ;; Experimental ACP features for agent-shell.
 ;;
-;; session/pushPrompt: Server-initiated prompt push.  The server sends
+;; session/push: Server-initiated prompt push.  The server sends
 ;; a request to the client, followed by session/update notifications,
-;; concluded by an end_of_session_push_prompt notification.  The client
+;; concluded by an session_push_end notification.  The client
 ;; then responds to the original request.
 
 ;;; Code:
@@ -38,43 +38,54 @@
 (declare-function acp-send-response "acp")
 (declare-function acp-make-error "acp")
 
-(cl-defun agent-shell-experimental--on-push-prompt-request (&key state acp-request)
-  "Handle an incoming session/pushPrompt ACP-REQUEST with STATE.
+(cl-defun agent-shell-experimental--on-session-push-request (&key state acp-request)
+  "Handle an incoming session/push ACP-REQUEST with STATE.
 
 The server pushes a prompt to the client, followed by session/update
 notifications.  The client sends the response after receiving an
-end_of_session_push_prompt notification."
+session_push_end notification."
   (let ((request (agent-shell-experimental--normalize-request acp-request)))
     ;; Track as active so notifications are not treated as stale.
     (unless (assq :active-requests state)
       (nconc state (list (cons :active-requests nil))))
     (map-put! state :active-requests
               (cons request (map-elt state :active-requests))))
-  (map-put! state :last-entry-type "session/pushPrompt"))
+  ;; Remove trailing empty shell prompt before push notifications render.
+  (agent-shell-experimental--remove-trailing-prompt)
+  (map-put! state :last-entry-type "session/push"))
 
-(cl-defun agent-shell-experimental--on-end-of-push-prompt (&key state on-finished)
-  "Handle end_of_session_push_prompt notification with STATE.
+(defun agent-shell-experimental--remove-trailing-prompt ()
+  "Remove the trailing empty shell prompt if it is at end of buffer."
+  (when-let* ((comint-last-prompt)
+              (prompt-start (car comint-last-prompt))
+              (prompt-end (cdr comint-last-prompt))
+              ((= (marker-position prompt-end) (point-max))))
+    (let ((inhibit-read-only t))
+      (delete-region (marker-position prompt-start) (point-max)))))
+
+(cl-defun agent-shell-experimental--on-session-push-end (&key state on-finished)
+  "Handle session_push_end notification with STATE.
 
 Finds the active push prompt request, sends the response, and
 removes it from active requests.  Calls ON-FINISHED when done
 to allow the caller to finalize (e.g. display a new shell prompt)."
   (when-let ((push-request (seq-find (lambda (r)
-                                       (equal (map-elt r :method) "session/pushPrompt"))
+                                       (equal (map-elt r :method) "session/push"))
                                      (map-elt state :active-requests))))
     (acp-send-response
      :client (map-elt state :client)
-     :response (agent-shell-experimental--make-push-prompt-response
+     :response (agent-shell-experimental--make-session-push-response
                 :request-id (map-elt push-request :id)))
     (map-put! state :active-requests
               (seq-remove (lambda (r)
-                            (equal (map-elt r :method) "session/pushPrompt"))
+                            (equal (map-elt r :method) "session/push"))
                           (map-elt state :active-requests))))
-  (map-put! state :last-entry-type "end_of_session_push_prompt")
+  (map-put! state :last-entry-type "session_push_end")
   (when on-finished
     (funcall on-finished)))
 
-(cl-defun agent-shell-experimental--make-push-prompt-response (&key request-id error)
-  "Instantiate a \"session/pushPrompt\" response.
+(cl-defun agent-shell-experimental--make-session-push-response (&key request-id error)
+  "Instantiate a \"session/push\" response.
 
 REQUEST-ID is the ID of the incoming server request this responds to.
 ERROR is an optional error object if the push prompt was rejected."
@@ -88,7 +99,7 @@ ERROR is an optional error object if the push prompt was rejected."
 
 (defun agent-shell-experimental--methods ()
   "Return the list of experimental methods that replay session notifications."
-  '("session/pushPrompt"))
+  '("session/push"))
 
 (defun agent-shell-experimental--normalize-request (request)
   "Normalize REQUEST from JSON symbol keys to keyword keys.
@@ -100,13 +111,13 @@ manually translates on the way out.
 
 Example:
 
-  \\='((method . \"session/pushPrompt\")
+  \\='((method . \"session/push\")
     (id . 3)
     (params . ((prompt . [...]))))
 
 becomes:
 
-  \\='((:method . \"session/pushPrompt\")
+  \\='((:method . \"session/push\")
     (:id . 3)
     (:params . ((prompt . [...]))))"
   (seq-map (lambda (pair)
