@@ -43,16 +43,30 @@
 
 The server pushes a prompt to the client, followed by session/update
 notifications.  The client sends the response after receiving an
-session_push_end notification."
-  (let ((request (agent-shell-experimental--normalize-request acp-request)))
-    ;; Track as active so notifications are not treated as stale.
-    (unless (assq :active-requests state)
-      (nconc state (list (cons :active-requests nil))))
-    (map-put! state :active-requests
-              (cons request (map-elt state :active-requests))))
-  ;; Remove trailing empty shell prompt before push notifications render.
-  (agent-shell-experimental--remove-trailing-prompt)
-  (map-put! state :last-entry-type "session/push"))
+session_push_end notification.
+
+If the client is busy (an active session/prompt or session/push is
+in progress), the request is immediately rejected with an error."
+  (if (seq-find (lambda (r)
+                  (member (map-elt r :method)
+                          '("session/prompt" "session/push")))
+                (map-elt state :active-requests))
+      ;; Busy. Reject push request.
+      (acp-send-response
+       :client (map-elt state :client)
+       :response (agent-shell-experimental--make-session-push-response
+                  :request-id (map-elt acp-request 'id)
+                  :error (acp-make-error :code -32000
+                                         :message "Busy")))
+    (let ((request (agent-shell-experimental--normalize-request acp-request)))
+      ;; Track as active so notifications are not treated as stale.
+      (unless (assq :active-requests state)
+        (nconc state (list (cons :active-requests nil))))
+      (map-put! state :active-requests
+                (cons request (map-elt state :active-requests))))
+    ;; Remove trailing empty shell prompt before push notifications render.
+    (agent-shell-experimental--remove-trailing-prompt)
+    (map-put! state :last-entry-type "session/push")))
 
 (defun agent-shell-experimental--remove-trailing-prompt ()
   "Remove the trailing empty shell prompt if it is at end of buffer."
