@@ -1965,6 +1965,34 @@ code block content
         (should-not responded)
         (should (equal (map-elt state :last-entry-type) "session/request_permission"))))))
 
+(ert-deftest agent-shell--on-request-sends-error-for-unhandled-method-test ()
+  "Test `agent-shell--on-request' responds with an error for unknown methods."
+  (with-temp-buffer
+    (let* ((captured-response nil)
+           (state `((:buffer . ,(current-buffer))
+                    (:client . test-client)
+                    (:event-subscriptions . nil)
+                    (:last-entry-type . "previous-entry"))))
+      (cl-letf (((symbol-function 'agent-shell--update-fragment)
+                 (lambda (&rest _)))
+                ((symbol-function 'acp-send-response)
+                 (lambda (&rest args)
+                   (setq captured-response (plist-get args :response))))
+                ((symbol-function 'acp-make-error)
+                 (lambda (&rest args)
+                   `((:code . ,(plist-get args :code))
+                     (:message . ,(plist-get args :message))))))
+        (agent-shell--on-request
+         :state state
+         :acp-request '((id . "req-404")
+                        (method . "unknown/method")))
+        (should (equal (map-elt captured-response :request-id) "req-404"))
+        (let ((error (map-elt captured-response :error)))
+          (should (equal (map-elt error :code) -32601))
+          (should (equal (map-elt error :message)
+                         "Method not found: unknown/method")))
+        (should-not (map-elt state :last-entry-type))))))
+
 ;;; Tests for agent-shell-show-context-usage-indicator
 
 (ert-deftest agent-shell--context-usage-indicator-bar-test ()

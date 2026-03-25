@@ -1824,13 +1824,21 @@ COMMAND, when present, may be a shell command string or an argv vector."
           :state state
           :acp-request acp-request))
         (t
-         (agent-shell--update-fragment
-          :state state
-          :block-id "Unhandled Incoming Request"
-          :body (format "⚠ Unhandled incoming request: \"%s\"" (map-elt acp-request 'method))
-          :create-new t
-          :navigation 'never)
-         (map-put! state :last-entry-type nil))))
+         (let ((method (map-elt acp-request 'method)))
+           (agent-shell--update-fragment
+            :state state
+            :block-id "Unhandled Incoming Request"
+            :body (format "⚠ Unhandled incoming request: \"%s\"" method)
+            :create-new t
+            :navigation 'never)
+           ;; Send error response to prevent client from hanging.
+           (acp-send-response
+            :client (map-elt state :client)
+            :response `((:request-id . ,(map-elt acp-request 'id))
+                        (:error . ,(acp-make-error
+                                    :code -32601
+                                    :message (format "Method not found: %s" method)))))
+           (map-put! state :last-entry-type nil)))))
 
 (cl-defun agent-shell--extract-buffer-text (&key buffer line limit)
   "Extract text from BUFFER starting from LINE with optional LIMIT.
