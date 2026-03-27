@@ -3214,7 +3214,7 @@ BINDINGS is a list of alists defining key bindings to display, each with:
     (error "STATE is required"))
   (let* ((header-model (agent-shell--make-header-model state :qualifier qualifier :bindings bindings))
          (text-header (format " %s%s%s @ %s%s%s%s"
-                              (propertize (concat (map-elt header-model :buffer-name) " Agent")
+                              (propertize (map-elt header-model :buffer-name)
                                           'font-lock-face 'font-lock-variable-name-face)
                               (if (map-elt header-model :model-name)
                                   (concat " ➤ " (propertize (map-elt header-model :model-name)
@@ -3303,7 +3303,7 @@ BINDINGS is a list of alists defining key bindings to display, each with:
                                       (dom-append-child text-node
                                                         (dom-node 'tspan
                                                                   `((fill . ,(face-attribute 'font-lock-variable-name-face :foreground)))
-                                                                  (concat (map-elt header-model :buffer-name) " Agent")))
+                                                                  (map-elt header-model :buffer-name)))
                                       ;; Model name (optional)
                                       (when (map-elt header-model :model-name)
                                         ;; Add separator arrow
