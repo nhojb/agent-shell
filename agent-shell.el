@@ -1554,7 +1554,10 @@ COMMAND, when present, may be a shell command string or an argv vector."
                                              (agent-shell-experimental--methods))))
                            (map-elt state :active-requests))
              (let ((new-prompt-p (not (equal (map-elt state :last-entry-type)
-                                             "user_message_chunk"))))
+                                             "user_message_chunk")))
+                   (content-text (or (map-nested-elt acp-notification '(params update content text))
+                                     (format "[%s]" (or (map-nested-elt acp-notification '(params update content type))
+                                                        "attachment")))))
                (when new-prompt-p
                  (map-put! state :chunked-group-count (1+ (map-elt state :chunked-group-count)))
                  (agent-shell--append-transcript
@@ -1562,8 +1565,7 @@ COMMAND, when present, may be a shell command string or an argv vector."
                   :file-path agent-shell--transcript-file))
                (agent-shell--append-transcript
                 :text (format "> %s\n"
-                              (agent-shell--indent-markdown-headers
-                               (map-nested-elt acp-notification '(params update content text))))
+                              (agent-shell--indent-markdown-headers content-text))
                 :file-path agent-shell--transcript-file)
                (agent-shell--update-text
                 :state state
@@ -1574,9 +1576,9 @@ COMMAND, when present, may be a shell command string or an argv vector."
                                    (map-nested-elt
                                     state '(:agent-config :shell-prompt))
                                    'font-lock-face 'comint-highlight-prompt)
-                                  (propertize (map-nested-elt acp-notification '(params update content text))
+                                  (propertize content-text
                                               'font-lock-face 'comint-highlight-input))
-                        (propertize (map-nested-elt acp-notification '(params update content text))
+                        (propertize content-text
                                     'font-lock-face 'comint-highlight-input))
                 :create-new new-prompt-p
                 :append t))
