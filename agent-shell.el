@@ -7020,13 +7020,21 @@ Remove: M-x agent-shell-remove-pending-request
 
 Read PROMPT from the minibuffer.  If the shell is busy, add it to the pending
 requests queue.  Otherwise, submit it immediately.  Queued requests will be
-automatically sent when the current request completes."
+automatically sent when the current request completes.
+
+While reading, @ completes project files and / completes available agent
+commands when the agent has reported them."
   (interactive
    (progn
      (unless (derived-mode-p 'agent-shell-mode)
        (error "Not in a shell"))
-     (list (read-string (or (map-nested-elt (agent-shell--state) '(:agent-config :shell-prompt))
-                            "Enqueue request: ")))))
+     (let ((shell-buffer (current-buffer)))
+       (list
+        (minibuffer-with-setup-hook
+            (lambda ()
+              (agent-shell-completion--setup-minibuffer shell-buffer))
+          (read-string (or (map-nested-elt (agent-shell--state) '(:agent-config :shell-prompt))
+                           "Enqueue request: ")))))))
   (if (shell-maker-busy)
       (agent-shell--enqueue-request :prompt prompt)
     (agent-shell--insert-to-shell-buffer :text prompt :submit t :no-focus t)))
