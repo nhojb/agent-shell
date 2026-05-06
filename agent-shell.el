@@ -422,7 +422,13 @@ Assume screenshot file path will be appended to this list."
                                                         "-t" "image/png" "-o")))
                            (unless (zerop exit-code)
                              (error "Command xclip failed with exit code %d" exit-code))
-                           (write-region (point-min) (point-max) file-path nil 'silent)))))))
+                           (write-region (point-min) (point-max) file-path nil 'silent))))))
+   (list (cons :command "powershell")
+         (cons :save (lambda (file-path)
+                       (when-let* ((cmd (format "& {(Get-Clipboard -Format image).Save(%s)}" (shell-quote-argument file-path)))
+                                   (exit-code (call-process "powershell" nil nil nil "-Command" cmd))
+                                   ((not (zerop exit-code))))
+                         (error "Command powershell failed with exit code %d" exit-code))))))
   "Handlers for saving clipboard images to a file.
 
 Each handler is an alist with the following keys:
