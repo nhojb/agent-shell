@@ -72,7 +72,7 @@ Returns an agent configuration alist using `agent-shell-make-agent-config'."
    :client-maker (lambda (buffer)
                    (agent-shell-hermes-make-client :buffer buffer))
    :install-instructions
-   "Defaults to running 'hermes acp' locally. 
+   "Defaults to running 'hermes acp' locally.
 Customize \\\\[customize-variable] `agent-shell-hermes-acp-command' for remote setups (e.g., via SSH)."))
 
 (defun agent-shell-hermes-start-agent ()
@@ -104,12 +104,12 @@ Customize \\\\[customize-variable] `agent-shell-hermes-acp-command' for remote s
   (let* ((is-dark (eq (frame-parameter nil 'background-mode) 'dark))
          ;; pyfiglet banner font, width=60, HERMES in # characters
          (text (string-trim "
-#     # ####### ######  #     # #######  #####  
-#     # #       #     # ##   ## #       #     # 
-#     # #       #     # # # # # #       #       
-####### #####   ######  #  #  # #####    ##### 
-#     # #       #   #   #     # #             
-#     # #       #    #  #     # #       #     # 
+#     # ####### ######  #     # #######  #####
+#     # #       #     # ##   ## #       #     #
+#     # #       #     # # # # # #       #
+####### #####   ######  #  #  # #####    #####
+#     # #       #   #   #     # #             #
+#     # #       #    #  #     # #       #     #
 #     # ####### #     # #     # #######  ##### " "\n")))
     (propertize text 'font-lock-face (if is-dark
                                          '(:foreground "#e0a050" :inherit fixed-pitch)
