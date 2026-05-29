@@ -701,6 +701,41 @@ Available values:
          (set-default sym value))
   :group 'agent-shell)
 
+(defcustom agent-shell-session-prompt-choices nil
+  "Choices to show in the session selection prompt.
+
+The session selection prompt offers a set of options when starting
+a new shell: \"Start new shell\", \"New Downloads shell\", \"New
+temp shell\", \"Switch to shell buffer\" (when other shells exist),
+and one entry per existing ACP session.
+
+When nil (the default), all choices are shown.  Otherwise, the
+value is a list of keyword kinds; only choices whose kind appears
+in the list are shown.  Valid kinds are:
+
+  `:new-shell'        Start a new shell.
+  `:downloads-shell'  Start a new downloads shell.
+  `:temp-shell'       Start a new temporary shell.
+  `:other-shell'      Switch to an existing shell buffer.
+  `:acp-session'      Resume a previously saved ACP session.
+
+To always start a new shell without prompting, use
+`agent-shell-session-strategy' with value `new' or `new-deferred'
+instead.
+
+Example (only show \"Start new shell\" and previous sessions):
+
+  (setq agent-shell-session-prompt-choices
+        \\='(:new-shell :acp-session))"
+  :type '(choice (const :tag "Show all choices" nil)
+                 (set :tag "Show selected kinds"
+                      (const :tag "Start new shell" :new-shell)
+                      (const :tag "New Downloads shell" :downloads-shell)
+                      (const :tag "New temp shell" :temp-shell)
+                      (const :tag "Switch to existing shell buffer" :other-shell)
+                      (const :tag "Resume previous ACP session" :acp-session)))
+  :group 'agent-shell)
+
 (defvar agent-shell-idle-timeout 30
   "Seconds before an `idle' event is emitted.
 
@@ -5005,6 +5040,35 @@ MAX-WIDTHS is an alist mapping column symbols to their max widths."
         (push (if face (propertize padded 'face face) padded) parts)))
     (apply #'concat (nreverse parts))))
 
+(defun agent-shell--filter-session-prompt-choices (choices)
+  "Filter CHOICES by `agent-shell-session-prompt-choices'.
+
+CHOICES is a list of alists, each shaped:
+  ((:kind . KIND) (:label . LABEL) (:value . VALUE))
+
+When `agent-shell-session-prompt-choices' is nil, returns CHOICES
+unchanged.  Otherwise, retains only those choices whose :kind is
+listed in `agent-shell-session-prompt-choices'.
+
+Example:
+  (let ((agent-shell-session-prompt-choices \\='(:new-shell :acp-session)))
+    (agent-shell--filter-session-prompt-choices
+     \\='(((:kind . :new-shell)
+        (:label . \"Start new shell\")
+        (:value . nil))
+       ((:kind . :temp-shell)
+        (:label . \"New temp shell\")
+        (:value . :temp-shell)))))
+  => (((:kind . :new-shell)
+       (:label . \"Start new shell\")
+       (:value . nil)))"
+  (if (null agent-shell-session-prompt-choices)
+      choices
+    (seq-filter (lambda (choice)
+                  (memq (map-elt choice :kind)
+                        agent-shell-session-prompt-choices))
+                choices)))
+
 (defun agent-shell--prompt-select-session (acp-sessions)
   "Prompt to choose one from ACP-SESSIONS.
 
@@ -5026,19 +5090,29 @@ Falls back to latest session in batch mode (e.g. tests)."
                                                                 (length (agent-shell--session-column-value col s)))
                                                               acp-sessions))))
                                    columns)))
-             ;; TODO: Consolidate choices with `agent-shell--shell-buffer'.
-             (session-choices (append (list (cons new-session-choice nil)
-                                            (cons "New Downloads shell" :downloads-shell)
-                                            (cons "New temp shell" :temp-shell))
-                                      (when other-shells
-                                        (list (cons "Switch to shell buffer" :other-shell)))
-                                      (mapcar (lambda (acp-session)
-                                                (cons (agent-shell--session-choice-label
-                                                       :acp-session acp-session
-                                                       :max-widths max-widths)
-                                                      acp-session))
-                                              acp-sessions)))
-             (candidates (mapcar #'car session-choices))
+             (session-choices
+              (agent-shell--filter-session-prompt-choices
+               (append (list `((:kind . :new-shell)
+                               (:label . ,new-session-choice)
+                               (:value . nil))
+                             '((:kind . :downloads-shell)
+                               (:label . "New Downloads shell")
+                               (:value . :downloads-shell))
+                             '((:kind . :temp-shell)
+                               (:label . "New temp shell")
+                               (:value . :temp-shell)))
+                       (when other-shells
+                         (list '((:kind . :other-shell)
+                                 (:label . "Switch to shell buffer")
+                                 (:value . :other-shell))))
+                       (mapcar (lambda (acp-session)
+                                 `((:kind . :acp-session)
+                                   (:label . ,(agent-shell--session-choice-label
+                                               :acp-session acp-session
+                                               :max-widths max-widths))
+                                   (:value . ,acp-session)))
+                               acp-sessions))))
+             (candidates (mapcar (lambda (c) (map-elt c :label)) session-choices))
              ;; Some completion frameworks yielded appended (nil) to each line
              ;; unless this-command was bound.
              ;;
@@ -5048,37 +5122,40 @@ Falls back to latest session in batch mode (e.g. tests)."
              ;; Let's optimize the rocket engine      Feb 12, 21:02 (nil)
              (this-command 'agent-shell))
         (agent-shell--emit-event :event 'session-prompt)
-        (let ((selection (completing-read "Start shell (default: new): "
-                                          (lambda (string pred action)
-                                            (if (eq action 'metadata)
-                                                '(metadata
-                                                  (display-sort-function . identity)
-                                                  (eager-display . t)
-                                                  (eager-update . t))
-                                              (complete-with-action action candidates string pred)))
-                                          nil t nil nil
-                                          new-session-choice)))
-          (pcase (map-elt session-choices selection)
-            (:other-shell
-             (let ((other-shell (agent-shell--read-shell-buffer
-                                 :prompt "Switch to shell buffer: "
-                                 :buffers other-shells))
-                   (bootstrapping-shell (map-elt (agent-shell--state) :buffer)))
-               (agent-shell--display-buffer other-shell)
-               (kill-buffer bootstrapping-shell)
-               :other-shell))
-            (:downloads-shell
-             (let ((config (map-elt (agent-shell--state) :agent-config)))
-               (kill-buffer (map-elt (agent-shell--state) :buffer))
-               (agent-shell-new-downloads-shell :config config))
-             :other-shell)
-            (:temp-shell
-             (let ((config (map-elt (agent-shell--state) :agent-config)))
-               (kill-buffer (map-elt (agent-shell--state) :buffer))
-               (agent-shell-new-temp-shell :config config))
-             :other-shell)
-            (choice choice)))))))
-
+        (when candidates
+          (let* ((selection (completing-read "Start shell (default: new): "
+                                             (lambda (string pred action)
+                                               (if (eq action 'metadata)
+                                                   '(metadata
+                                                     (display-sort-function . identity)
+                                                     (eager-display . t)
+                                                     (eager-update . t))
+                                                 (complete-with-action action candidates string pred)))
+                                             nil t nil nil
+                                             new-session-choice))
+                 (value (map-elt (seq-find (lambda (c) (equal (map-elt c :label) selection))
+                                           session-choices)
+                                 :value)))
+            (pcase value
+              (:other-shell
+               (let ((other-shell (agent-shell--read-shell-buffer
+                                   :prompt "Switch to shell buffer: "
+                                   :buffers other-shells))
+                     (bootstrapping-shell (map-elt (agent-shell--state) :buffer)))
+                 (agent-shell--display-buffer other-shell)
+                 (kill-buffer bootstrapping-shell)
+                 :other-shell))
+              (:downloads-shell
+               (let ((config (map-elt (agent-shell--state) :agent-config)))
+                 (kill-buffer (map-elt (agent-shell--state) :buffer))
+                 (agent-shell-new-downloads-shell :config config))
+               :other-shell)
+              (:temp-shell
+               (let ((config (map-elt (agent-shell--state) :agent-config)))
+                 (kill-buffer (map-elt (agent-shell--state) :buffer))
+                 (agent-shell-new-temp-shell :config config))
+               :other-shell)
+              (choice choice))))))))
 
 (cl-defun agent-shell--session-from-response (&key acp-response acp-session-id)
   "Return internal session state from ACP-RESPONSE and ACP-SESSION-ID."
@@ -6213,6 +6290,7 @@ Returns a buffer object or nil."
             (user-error "No agent shell buffers available for current project"))
         (if (and (eq agent-shell-session-strategy 'new-deferred)
                  (agent-shell-buffers))
+<<<<<<< HEAD
             ;; TODO: Consolidate choices with `agent-shell--prompt-select-session'.
             (let* ((start-new "New shell")
                    (start-downloads "New Downloads shell")
@@ -6234,6 +6312,45 @@ Returns a buffer object or nil."
                                                 (error "No agent config found"))
                                     :no-focus t
                                     :new-session t))))
+=======
+            (let* ((choices (agent-shell--filter-session-prompt-choices
+                             '(((:kind . :new-shell)
+                                (:label . "New shell")
+                                (:value . :new-shell))
+                               ((:kind . :downloads-shell)
+                                (:label . "New Downloads shell")
+                                (:value . :downloads-shell))
+                               ((:kind . :temp-shell)
+                                (:label . "New temp shell")
+                                (:value . :temp-shell))
+                               ((:kind . :other-shell)
+                                (:label . "Switch to shell buffer")
+                                (:value . :other-shell)))))
+                   (selection (when choices
+                                (completing-read "Start shell (default: new): "
+                                                 (mapcar (lambda (c) (map-elt c :label)) choices)
+                                                 nil t)))
+                   (value (when selection
+                            (map-elt (seq-find (lambda (c) (equal (map-elt c :label) selection))
+                                               choices)
+                                     :value))))
+              (pcase value
+                (:other-shell
+                 (get-buffer (completing-read "Switch to shell buffer: "
+                                              (mapcar #'buffer-name (agent-shell-buffers))
+                                              nil t)))
+                (:downloads-shell
+                 (agent-shell-new-downloads-shell :no-display t))
+                (:temp-shell
+                 (agent-shell-new-temp-shell :no-display t))
+                (_
+                 (agent-shell--start :config (or (agent-shell--resolve-preferred-config)
+                                                 (agent-shell-select-config
+                                                  :prompt "Start new agent: ")
+                                                 (error "No agent config found"))
+                                     :no-focus t
+                                     :new-session t))))
+>>>>>>> 47b8a29 (Add agent-shell-session-prompt-choices defcustom)
           (agent-shell--start :config (or (agent-shell--resolve-preferred-config)
                                           (agent-shell-select-config
                                            :prompt "Start new agent: ")
