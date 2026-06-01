@@ -705,7 +705,7 @@ Available values:
   "Choices to show in the session selection prompt.
 
 The session selection prompt offers a set of options when starting
-a new shell: \"Start new shell\", \"New Downloads shell\", \"New
+a new shell: \"New shell\", \"New Downloads shell\", \"New
 temp shell\", \"Switch to shell buffer\" (when other shells exist),
 and one entry per existing ACP session.
 
@@ -723,13 +723,13 @@ To always start a new shell without prompting, use
 `agent-shell-session-strategy' with value `new' or `new-deferred'
 instead.
 
-Example (only show \"Start new shell\" and previous sessions):
+Example (only show \"New shell\" and previous sessions):
 
   (setq agent-shell-session-prompt-choices
         \\='(:new-shell :acp-session))"
   :type '(choice (const :tag "Show all choices" nil)
                  (set :tag "Show selected kinds"
-                      (const :tag "Start new shell" :new-shell)
+                      (const :tag "New shell" :new-shell)
                       (const :tag "New Downloads shell" :downloads-shell)
                       (const :tag "New temp shell" :temp-shell)
                       (const :tag "Switch to existing shell buffer" :other-shell)
@@ -5054,13 +5054,13 @@ Example:
   (let ((agent-shell-session-prompt-choices \\='(:new-shell :acp-session)))
     (agent-shell--filter-session-prompt-choices
      \\='(((:kind . :new-shell)
-        (:label . \"Start new shell\")
+        (:label . \"New shell\")
         (:value . nil))
        ((:kind . :temp-shell)
         (:label . \"New temp shell\")
         (:value . :temp-shell)))))
   => (((:kind . :new-shell)
-       (:label . \"Start new shell\")
+       (:label . \"New shell\")
        (:value . nil)))"
   (if (null agent-shell-session-prompt-choices)
       choices
@@ -5068,6 +5068,43 @@ Example:
                   (memq (map-elt choice :kind)
                         agent-shell-session-prompt-choices))
                 choices)))
+
+(cl-defun agent-shell--build-session-prompt-choices
+    (&key new-shell-label other-shell-p acp-sessions max-widths)
+  "Build the choices list shown by the session selection prompt.
+
+Always includes (in order) a `:new-shell' entry labeled
+NEW-SHELL-LABEL, followed by `:downloads-shell' and `:temp-shell'
+entries.
+
+When OTHER-SHELL-P is non-nil, an `:other-shell' entry is added.
+
+When ACP-SESSIONS is non-nil, one `:acp-session' entry is added
+per session, with labels aligned using MAX-WIDTHS (see
+`agent-shell--session-choice-label').
+
+Each entry is an alist of the form
+  ((:kind . KIND) (:label . LABEL) (:value . VALUE))."
+  (append (list `((:kind . :new-shell)
+                  (:label . ,new-shell-label)
+                  (:value . nil)))
+          '(((:kind . :downloads-shell)
+             (:label . "New Downloads shell")
+             (:value . :downloads-shell))
+            ((:kind . :temp-shell)
+             (:label . "New temp shell")
+             (:value . :temp-shell)))
+          (when other-shell-p
+            '(((:kind . :other-shell)
+               (:label . "Switch to shell buffer")
+               (:value . :other-shell))))
+          (mapcar (lambda (acp-session)
+                    `((:kind . :acp-session)
+                      (:label . ,(agent-shell--session-choice-label
+                                  :acp-session acp-session
+                                  :max-widths max-widths))
+                      (:value . ,acp-session)))
+                  acp-sessions)))
 
 (defun agent-shell--prompt-select-session (acp-sessions)
   "Prompt to choose one from ACP-SESSIONS.
@@ -5092,26 +5129,11 @@ Falls back to latest session in batch mode (e.g. tests)."
                                    columns)))
              (session-choices
               (agent-shell--filter-session-prompt-choices
-               (append (list `((:kind . :new-shell)
-                               (:label . ,new-session-choice)
-                               (:value . nil))
-                             '((:kind . :downloads-shell)
-                               (:label . "New Downloads shell")
-                               (:value . :downloads-shell))
-                             '((:kind . :temp-shell)
-                               (:label . "New temp shell")
-                               (:value . :temp-shell)))
-                       (when other-shells
-                         (list '((:kind . :other-shell)
-                                 (:label . "Switch to shell buffer")
-                                 (:value . :other-shell))))
-                       (mapcar (lambda (acp-session)
-                                 `((:kind . :acp-session)
-                                   (:label . ,(agent-shell--session-choice-label
-                                               :acp-session acp-session
-                                               :max-widths max-widths))
-                                   (:value . ,acp-session)))
-                               acp-sessions))))
+               (agent-shell--build-session-prompt-choices
+                :new-shell-label new-session-choice
+                :other-shell-p other-shells
+                :acp-sessions acp-sessions
+                :max-widths max-widths)))
              (candidates (mapcar (lambda (c) (map-elt c :label)) session-choices))
              ;; Some completion frameworks yielded appended (nil) to each line
              ;; unless this-command was bound.
@@ -6314,18 +6336,9 @@ Returns a buffer object or nil."
                                     :new-session t))))
 =======
             (let* ((choices (agent-shell--filter-session-prompt-choices
-                             '(((:kind . :new-shell)
-                                (:label . "New shell")
-                                (:value . :new-shell))
-                               ((:kind . :downloads-shell)
-                                (:label . "New Downloads shell")
-                                (:value . :downloads-shell))
-                               ((:kind . :temp-shell)
-                                (:label . "New temp shell")
-                                (:value . :temp-shell))
-                               ((:kind . :other-shell)
-                                (:label . "Switch to shell buffer")
-                                (:value . :other-shell)))))
+                             (agent-shell--build-session-prompt-choices
+                              :new-shell-label "New shell"
+                              :other-shell-p t)))
                    (selection (when choices
                                 (completing-read "Start shell (default: new): "
                                                  (mapcar (lambda (c) (map-elt c :label)) choices)

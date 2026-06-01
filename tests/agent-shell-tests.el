@@ -2177,6 +2177,47 @@ and rejects `new-deferred' and other unknown values."
                       (:label . "Session A")
                       (:value . session-a)))))))
 
+(ert-deftest agent-shell--build-session-prompt-choices-minimal ()
+  "Test the builder includes new/downloads/temp by default."
+  (should (equal (mapcar (lambda (c) (map-elt c :kind))
+                         (agent-shell--build-session-prompt-choices
+                          :new-shell-label "Start new shell"))
+                 '(:new-shell :downloads-shell :temp-shell)))
+  (should (equal (map-elt (car (agent-shell--build-session-prompt-choices
+                                :new-shell-label "Start new shell"))
+                          :label)
+                 "Start new shell")))
+
+(ert-deftest agent-shell--build-session-prompt-choices-other-shell ()
+  "Test the builder appends :other-shell when OTHER-SHELL-P is non-nil."
+  (should-not (seq-find (lambda (c) (eq (map-elt c :kind) :other-shell))
+                        (agent-shell--build-session-prompt-choices
+                         :new-shell-label "Start new shell")))
+  (should (seq-find (lambda (c) (eq (map-elt c :kind) :other-shell))
+                    (agent-shell--build-session-prompt-choices
+                     :new-shell-label "Start new shell"
+                     :other-shell-p t))))
+
+(ert-deftest agent-shell--build-session-prompt-choices-acp-sessions ()
+  "Test the builder appends one :acp-session per session, preserving value."
+  (let* ((session-a '((sessionId . "s-1")
+                      (title . "First")
+                      (cwd . "/tmp")
+                      (updatedAt . "2026-01-19T14:00:00Z")))
+         (session-b '((sessionId . "s-2")
+                      (title . "Second")
+                      (cwd . "/tmp")
+                      (updatedAt . "2026-01-20T16:00:00Z")))
+         (choices (agent-shell--build-session-prompt-choices
+                   :new-shell-label "Start new shell"
+                   :acp-sessions (list session-a session-b)))
+         (session-choices (seq-filter (lambda (c)
+                                        (eq (map-elt c :kind) :acp-session))
+                                      choices)))
+    (should (equal (length session-choices) 2))
+    (should (equal (map-elt (nth 0 session-choices) :value) session-a))
+    (should (equal (map-elt (nth 1 session-choices) :value) session-b))))
+
 (ert-deftest agent-shell--initiate-session-strategy-new-skips-list-load ()
   "Test `agent-shell--initiate-session' skips list/load when strategy is `new'."
   (with-temp-buffer
