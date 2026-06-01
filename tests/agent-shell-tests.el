@@ -2131,10 +2131,10 @@ and rejects `new-deferred' and other unknown values."
                 :type 'user-error))
 
 (ert-deftest agent-shell--filter-session-prompt-choices-nil ()
-  "Test that nil filter passes all choices through unchanged."
-  (let ((agent-shell-session-prompt-choices nil)
+  "Test that nil exclusion passes all choices through unchanged."
+  (let ((agent-shell-session-prompt-exclude-choices nil)
         (choices '(((:kind . :new-shell)
-                    (:label . "Start new shell")
+                    (:label . "New shell")
                     (:value . nil))
                    ((:kind . :downloads-shell)
                     (:label . "New Downloads shell")
@@ -2151,12 +2151,13 @@ and rejects `new-deferred' and other unknown values."
     (should (equal (agent-shell--filter-session-prompt-choices choices)
                    choices))))
 
-(ert-deftest agent-shell--filter-session-prompt-choices-list ()
-  "Test that a list of kinds keeps only choices with matching kind."
-  (let ((agent-shell-session-prompt-choices '(:new-shell :acp-session)))
+(ert-deftest agent-shell--filter-session-prompt-choices-exclude ()
+  "Test that an exclusion list drops choices with matching kind."
+  (let ((agent-shell-session-prompt-exclude-choices
+         '(:downloads-shell :temp-shell :other-shell)))
     (should (equal (agent-shell--filter-session-prompt-choices
                     '(((:kind . :new-shell)
-                       (:label . "Start new shell")
+                       (:label . "New shell")
                        (:value . nil))
                       ((:kind . :downloads-shell)
                        (:label . "New Downloads shell")
@@ -2171,7 +2172,7 @@ and rejects `new-deferred' and other unknown values."
                        (:label . "Session A")
                        (:value . session-a))))
                    '(((:kind . :new-shell)
-                      (:label . "Start new shell")
+                      (:label . "New shell")
                       (:value . nil))
                      ((:kind . :acp-session)
                       (:label . "Session A")

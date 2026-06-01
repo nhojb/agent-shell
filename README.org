@@ -834,7 +834,7 @@ always go to Evil modes if you need to with ~C-z~).
 | agent-shell-session-restore-verbosity         | How much prior context to show when restoring a session.                        |
 | agent-shell-screenshot-command                | The program to use for capturing screenshots.                                   |
 | agent-shell-section-functions                 | Abnormal hook run after overlays are applied (experimental).                    |
-| agent-shell-session-prompt-choices            | Choices to show in the session selection prompt.                                |
+| agent-shell-session-prompt-exclude-choices    | Kinds of choices to exclude from the session selection prompt.                  |
 | agent-shell-session-strategy                  | How to handle sessions when starting a new shell.                               |
 | agent-shell-show-busy-indicator               | Non-nil to show the busy indicator animation in the header and mode line.       |
 | agent-shell-show-config-icons                 | Whether to show icons in agent config selection.                                |

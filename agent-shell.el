@@ -701,8 +701,8 @@ Available values:
          (set-default sym value))
   :group 'agent-shell)
 
-(defcustom agent-shell-session-prompt-choices nil
-  "Choices to show in the session selection prompt.
+(defcustom agent-shell-session-prompt-exclude-choices nil
+  "Kinds of choices to exclude from the session selection prompt.
 
 The session selection prompt offers a set of options when starting
 a new shell: \"New shell\", \"New Downloads shell\", \"New
@@ -710,8 +710,8 @@ temp shell\", \"Switch to shell buffer\" (when other shells exist),
 and one entry per existing ACP session.
 
 When nil (the default), all choices are shown.  Otherwise, the
-value is a list of keyword kinds; only choices whose kind appears
-in the list are shown.  Valid kinds are:
+value is a list of keyword kinds; choices whose kind appears in
+the list are excluded.  Valid kinds are:
 
   `:new-shell'        Start a new shell.
   `:downloads-shell'  Start a new downloads shell.
@@ -723,12 +723,12 @@ To always start a new shell without prompting, use
 `agent-shell-session-strategy' with value `new' or `new-deferred'
 instead.
 
-Example (only show \"New shell\" and previous sessions):
+Example (hide the downloads and temp shell entries):
 
-  (setq agent-shell-session-prompt-choices
-        \\='(:new-shell :acp-session))"
-  :type '(choice (const :tag "Show all choices" nil)
-                 (set :tag "Show selected kinds"
+  (setq agent-shell-session-prompt-exclude-choices
+        \\='(:downloads-shell :temp-shell))"
+  :type '(choice (const :tag "Exclude nothing (show all)" nil)
+                 (set :tag "Exclude selected kinds"
                       (const :tag "New shell" :new-shell)
                       (const :tag "New Downloads shell" :downloads-shell)
                       (const :tag "New temp shell" :temp-shell)
@@ -5041,17 +5041,17 @@ MAX-WIDTHS is an alist mapping column symbols to their max widths."
     (apply #'concat (nreverse parts))))
 
 (defun agent-shell--filter-session-prompt-choices (choices)
-  "Filter CHOICES by `agent-shell-session-prompt-choices'.
+  "Filter CHOICES by `agent-shell-session-prompt-exclude-choices'.
 
 CHOICES is a list of alists, each shaped:
   ((:kind . KIND) (:label . LABEL) (:value . VALUE))
 
-When `agent-shell-session-prompt-choices' is nil, returns CHOICES
-unchanged.  Otherwise, retains only those choices whose :kind is
-listed in `agent-shell-session-prompt-choices'.
+When `agent-shell-session-prompt-exclude-choices' is nil, returns
+CHOICES unchanged.  Otherwise, drops any choice whose :kind is
+listed in `agent-shell-session-prompt-exclude-choices'.
 
 Example:
-  (let ((agent-shell-session-prompt-choices \\='(:new-shell :acp-session)))
+  (let ((agent-shell-session-prompt-exclude-choices \\='(:temp-shell)))
     (agent-shell--filter-session-prompt-choices
      \\='(((:kind . :new-shell)
         (:label . \"New shell\")
@@ -5062,11 +5062,11 @@ Example:
   => (((:kind . :new-shell)
        (:label . \"New shell\")
        (:value . nil)))"
-  (if (null agent-shell-session-prompt-choices)
+  (if (null agent-shell-session-prompt-exclude-choices)
       choices
-    (seq-filter (lambda (choice)
+    (seq-remove (lambda (choice)
                   (memq (map-elt choice :kind)
-                        agent-shell-session-prompt-choices))
+                        agent-shell-session-prompt-exclude-choices))
                 choices)))
 
 (cl-defun agent-shell--build-session-prompt-choices
