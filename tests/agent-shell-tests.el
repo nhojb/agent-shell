@@ -2579,6 +2579,112 @@ Based on ACP traffic from https://github.com/xenodium/agent-shell/issues/415."
               (:raw-input . ((command . "ls -la")))
               (:kind . "execute"))))))
 
+(ert-deftest agent-shell--permission-title-content-folded-test ()
+  "Append ACP `content' text after the title.
+Based on Jane Street AIDE permission requests from
+https://github.com/xenodium/agent-shell-js/issues/27 where
+structured `content' carries the user-facing detail and there
+is no `rawInput'."
+  (should (equal
+           "Link Feature\n\nAllow linking to this session?"
+           (agent-shell--permission-title
+            :tool-call
+            `((:title . "Link Feature")
+              (:kind . "other")
+              (:content . [((type . "content")
+                            (content (type . "text")
+                                     (text . "Allow linking to this session?")))]))))))
+
+(ert-deftest agent-shell--permission-title-content-dedup-against-title-test ()
+  "Skip `content' text already mentioned in the title.
+Claude populates `content' with the same string as
+`rawInput.description'; we should not duplicate the description
+when it is already in the rendered text."
+  (should (equal
+           "```console\nping -c 4 localhost\n```\n\nPing localhost 4 times"
+           (agent-shell--permission-title
+            :tool-call
+            `((:title . "ping -c 4 localhost")
+              (:kind . "execute")
+              (:raw-input . ((command . "ping -c 4 localhost")
+                             (description . "Ping localhost 4 times")))
+              (:content . [((type . "content")
+                            (content (type . "text")
+                                     (text . "Ping localhost 4 times")))]))))))
+
+(ert-deftest agent-shell--permission-title-content-substring-skipped-test ()
+  "Skip `content' text that is a substring of the existing title."
+  (should (equal
+           "Read foo.rs"
+           (agent-shell--permission-title
+            :tool-call
+            `((:title . "Read foo.rs")
+              (:kind . "read")
+              (:content . [((type . "content")
+                            (content (type . "text")
+                                     (text . "Read foo.rs")))]))))))
+
+(ert-deftest agent-shell--permission-title-locations-appended-test ()
+  "Append `locations' paths not already mentioned in the title."
+  (should (equal
+           "Search-url Fetch (https://google.com)"
+           (agent-shell--permission-title
+            :tool-call
+            `((:title . "Search-url Fetch")
+              (:kind . "other")
+              (:locations . [((path . "https://google.com"))]))))))
+
+(ert-deftest agent-shell--permission-title-locations-skipped-when-in-title-test ()
+  "Skip `locations' paths already present in the title."
+  (should (equal
+           "`echo hi`"
+           (agent-shell--permission-title
+            :tool-call
+            `((:title . "`echo hi`")
+              (:kind . "execute")
+              (:locations . [((path . "echo hi"))]))))))
+
+(ert-deftest agent-shell--permission-title-locations-skipped-when-in-content-test ()
+  "Skip `locations' paths already embedded inside `content' text.
+AIDE's url_fetch request sends the URL in both `content' (inside
+a JSON code block) and `locations'; only one copy should render."
+  (should (equal
+           "Search-url Fetch\n\nCall url_fetch with {\"url\": \"https://google.com\"}"
+           (agent-shell--permission-title
+            :tool-call
+            `((:title . "Search-url Fetch")
+              (:kind . "other")
+              (:content . [((type . "content")
+                            (content (type . "text")
+                                     (text . "Call url_fetch with {\"url\": \"https://google.com\"}")))])
+              (:locations . [((path . "https://google.com"))]))))))
+
+(ert-deftest agent-shell--permission-title-locations-basename-skipped-test ()
+  "Skip `locations' paths whose basename was already shown via `rawInput'.
+Some agents populate both `rawInput.filepath' (which we render as
+basename) and `locations' (which has the absolute path); only one
+copy should render."
+  (should (equal
+           "edit (foo.rs)"
+           (agent-shell--permission-title
+            :tool-call
+            `((:title . "edit")
+              (:kind . "edit")
+              (:raw-input . ((filepath . "/home/user/foo.rs")))
+              (:locations . [((path . "/home/user/foo.rs"))]))))))
+
+(ert-deftest agent-shell--permission-title-empty-content-and-locations-test ()
+  "Empty `content' / `locations' vectors should not affect the title.
+Gemini sends these fields as empty arrays."
+  (should (equal
+           "git log --reverse | head -n 1"
+           (agent-shell--permission-title
+            :tool-call
+            `((:title . "git log --reverse | head -n 1")
+              (:kind . "execute")
+              (:content . [])
+              (:locations . []))))))
+
 (ert-deftest agent-shell-restart-preserves-default-directory ()
   "Restart should use the shell's directory, not the fallback buffer's.
 

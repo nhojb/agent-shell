@@ -1833,6 +1833,8 @@ COMMAND, when present, may be a shell command string or an argv vector."
                         (list (cons :command command)))
                       (when-let* ((raw-input (map-nested-elt acp-notification '(params update rawInput))))
                         (list (cons :raw-input raw-input)))
+                      (when-let* ((locations (map-nested-elt acp-notification '(params update locations))))
+                        (list (cons :locations locations)))
                       (when-let* ((diff (agent-shell--make-diff-info
                                          :acp-tool-call (map-nested-elt acp-notification '(params update)))))
                         (list (cons :diff diff)))))
@@ -2008,6 +2010,10 @@ COMMAND, when present, may be a shell command string or an argv vector."
                                                    (map-nested-elt acp-request '(params options)))))
                   (when-let* ((raw-input (map-nested-elt acp-request '(params toolCall rawInput))))
                     (list (cons :raw-input raw-input)))
+                  (when-let* ((content (map-nested-elt acp-request '(params toolCall content))))
+                    (list (cons :content content)))
+                  (when-let* ((locations (map-nested-elt acp-request '(params toolCall locations))))
+                    (list (cons :locations locations)))
                   (when-let* ((diff (agent-shell--make-diff-info
                                      :acp-tool-call (map-nested-elt acp-request '(params toolCall)))))
                     (list (cons :diff diff)))))
@@ -5980,8 +5986,14 @@ for details."
 (cl-defun agent-shell--permission-title (&key tool-call)
   "Build a display title for a permission dialog from TOOL-CALL.
 
-Extracts the tool call title, command, and filepath from TOOL-CALL
-and combines them into a user-facing string.
+Combines the ACP ToolCall \\='title, \\='rawInput-derived command and
+filepath, and the structured \\='content and \\='locations fields
+(when the agent provides them) into a user-facing string.
+
+Simple substring deduplication avoids showing the same info
+twice when an agent populates both \\='rawInput and \\='content,
+or when a \\='locations path is already mentioned in title or
+\\='content.
 
 For example:
 
@@ -5998,6 +6010,22 @@ For example:
                        (map-elt raw-input 'fileName)
                        (map-elt raw-input 'path)
                        (map-elt raw-input 'file_path)))
+         (content-texts
+          (delq nil
+                (mapcar (lambda (item)
+                          (when-let* ((item-text (map-nested-elt item '(content text)))
+                                      ((stringp item-text))
+                                      ((not (string-empty-p item-text))))
+                            item-text))
+                        (append (map-elt tool-call :content) nil))))
+         (location-paths
+          (delq nil
+                (mapcar (lambda (loc)
+                          (when-let* ((path (map-elt loc 'path))
+                                      ((stringp path))
+                                      ((not (string-empty-p path))))
+                            path))
+                        (append (map-elt tool-call :locations) nil))))
          ;; Some agents don't include the command in the
          ;; permission/tool call title, so it's hard to know
          ;; what the permission is actually allowing.
@@ -6021,11 +6049,35 @@ For example:
                    filename)))
     ;; Fence execute commands so markdown-overlays
     ;; renders them verbatim, not as markdown.
-    (if (and text
-             (equal text command)
-             (equal (map-elt tool-call :kind) "execute"))
-        (concat "```console\n" text "\n```")
-      text)))
+    (when (and text
+               (equal text command)
+               (equal (map-elt tool-call :kind) "execute"))
+      (setq text (concat "```console\n" text "\n```")))
+    ;; Fold in ACP `content' text blocks attached to the tool call.
+    ;; Skip blocks whose text is already a substring of what we
+    ;; have (e.g. Claude mirrors `rawInput.description' in `content').
+    (dolist (content-text content-texts)
+      (unless (and text
+                   (string-match-p (regexp-quote content-text) text))
+        (setq text (if text
+                       (concat text "\n\n" content-text)
+                     content-text))))
+    ;; Fold in ACP `locations' paths.  Skip paths (or their
+    ;; basenames) already present in the displayed text — covers
+    ;; both filesystem paths the `rawInput' branch already
+    ;; surfaced and URLs/commands embedded in `content' text.
+    (dolist (path location-paths)
+      (when-let* ((basename (file-name-nondirectory path))
+                  ((or (not text)
+                       (not (string-match-p (regexp-quote path) text))))
+                  ((or (not text)
+                       (equal basename path)
+                       (string-empty-p basename)
+                       (not (string-match-p (regexp-quote basename) text)))))
+        (setq text (if text
+                       (concat (string-trim-right text) " (" path ")")
+                     path))))
+    text))
 
 (cl-defun agent-shell--make-tool-call-permission-text (&key tool-call tool-call-id client state)
   "Create text to render permission dialog for TOOL-CALL.
