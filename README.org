@@ -236,6 +236,19 @@ You can install via:
 
 This will automatically install the required dependencies ([[https://melpa.org/#/acp][acp.el]] and [[https://melpa.org/#/shell-maker][shell-maker]]).
 
+*** Optional: image utilities
+
+Pasting images from the clipboard (=agent-shell-send-clipboard-image= or =yank= or =C-y=) and capturing screenshots (=agent-shell-send-screenshot=) rely on external tools. Install the ones for your platform:
+
+| Platform        | Clipboard paste                          | Screenshot capture           |
+|-----------------+------------------------------------------+------------------------------|
+| macOS           | =brew install pngpaste=                    | =screencapture= (preinstalled) |
+| Linux (Wayland) | =wl-paste= (e.g. =apt install wl-clipboard=) | =import= (from ImageMagick)    |
+| Linux (X11)     | =apt install xclip=                        | =import= (from ImageMagick)    |
+| Windows         | =powershell=                               | (not bundled)                |
+
+Handlers are detected at runtime via =executable-find=. See =agent-shell-clipboard-image-handlers= and =agent-shell-screenshot-command= to customize.
+
 *** Doom Emacs
 
 If you are using Doom Emacs and would like to use the =package!= macro:
