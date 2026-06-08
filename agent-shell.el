@@ -926,11 +926,7 @@ handles viewport mode detection, existing shell reuse, and project context."
           (agent-shell-toggle)
         (let* ((shell-buffer
                 (cond (switch-to-shell
-                       (get-buffer
-                        (completing-read "Switch to shell: "
-                                         (mapcar #'buffer-name (or (agent-shell-buffers)
-                                                                   (user-error "No shells available")))
-                                         nil t)))
+                       (agent-shell--read-shell-buffer :prompt "Switch to shell: "))
                       (new-shell
                        (agent-shell--start :config (or config
                                                        (agent-shell--resolve-preferred-config)
@@ -957,12 +953,8 @@ handles viewport mode detection, existing shell reuse, and project context."
              :append text
              :shell-buffer shell-buffer))))
     (cond (switch-to-shell
-           (let* ((shell-buffer
-                   (get-buffer
-                    (completing-read "Switch to shell: "
-                                     (mapcar #'buffer-name (or (agent-shell-buffers)
-                                                               (user-error "No shells available")))
-                                     nil t)))
+           (let* ((shell-buffer (agent-shell--read-shell-buffer
+                                 :prompt "Switch to shell: "))
                   (text (agent-shell--context :shell-buffer shell-buffer)))
              (agent-shell--display-buffer shell-buffer)
              (when text
@@ -1247,19 +1239,30 @@ Returns nil if no icon should be displayed."
 
 (cl-defun agent-shell-select-config (&key prompt)
   "Display PROMPT to select an agent config from `agent-shell-agent-configs'."
-  (let* ((configs agent-shell-agent-configs)
-         (choices (mapcar (lambda (config)
-                            (let ((display-name (or (map-elt config :mode-line-name)
-                                                    (map-elt config :buffer-name)
-                                                    "Unknown Agent"))
-                                  (icon (when agent-shell-show-config-icons
-                                          (agent-shell--config-icon :config config))))
-                              (cons (concat icon (when icon " ") display-name)
-                                    config)))
-                          configs))
+  (let* ((choices (mapcar
+                   (lambda (config)
+                     (cons (propertize
+                            (or (map-elt config :mode-line-name)
+                                (map-elt config :buffer-name)
+                                "Unknown Agent")
+                            'agent-shell--icon
+                            (when agent-shell-show-config-icons
+                              (agent-shell--config-icon :config config)))
+                           config))
+                   agent-shell-agent-configs))
          (completion-extra-properties '(:category agent-shell-config))
          (completion-styles (cons 'substring completion-styles))
-         (selected-name (completing-read (or prompt "Select agent: ") choices nil t)))
+         (selected-name (completing-read
+                         (or prompt "Select agent: ")
+                         (lambda (string pred action)
+                           (if (eq action 'metadata)
+                               '(metadata
+                                 (category . agent-shell-config)
+                                 (affixation-function
+                                  . agent-shell--icon-affixation))
+                             (complete-with-action action (mapcar #'car choices)
+                                                   string pred)))
+                         nil t)))
     (map-elt choices selected-name)))
 
 (defun agent-shell-buffers ()
@@ -1301,6 +1304,104 @@ Includes shells accessed via viewport buffers, preserving visited order."
            (switch-to-buffer viewport-buffer)))
         (t
          (user-error "Not in an agent-shell buffer"))))
+
+(cl-defun agent-shell--read-shell-buffer (&key prompt buffers)
+  "Read an `agent-shell-mode' buffer via `completing-read'.
+Each candidate shows the agent icon, buffer name, status, and
+session title in aligned columns.
+
+PROMPT is the prompt string (defaults to \"Agent shell buffer: \").
+BUFFERS is the list of buffers to choose from, defaulting to
+`agent-shell-buffers'.
+
+Returns the chosen shell buffer.  Signals a `user-error' when no
+buffers are available or nothing was selected."
+  (let* ((entries (mapcar
+                   (lambda (buffer)
+                     (with-current-buffer buffer
+                       (list (cons :buffer buffer)
+                             (cons :icon (when agent-shell-show-config-icons
+                                           (agent-shell--config-icon
+                                            :config (map-elt agent-shell--state
+                                                             :agent-config))))
+                             (cons :name (buffer-name buffer))
+                             (cons :status (symbol-name (agent-shell-status)))
+                             (cons :title (let ((title (string-trim
+                                                        (or (map-nested-elt agent-shell--state
+                                                                            '(:session :title))
+                                                            ""))))
+                                            (if (> (length title) 50)
+                                                (concat (substring title 0 47) "...")
+                                              title))))))
+                   (or buffers
+                       (agent-shell-buffers)
+                       (user-error "No agent-shell buffers"))))
+         (name-width (apply #'max (mapcar (lambda (e) (length (map-elt e :name)))
+                                          entries)))
+         (status-width (apply #'max (mapcar (lambda (e) (length (map-elt e :status)))
+                                            entries)))
+         ;; Stash the icon as a text property so it can be supplied as an
+         ;; affixation prefix later; this keeps the icon out of the candidate
+         ;; text so `completing-read' matching doesn't see the leading space.
+         (choices (mapcar
+                   (lambda (e)
+                     (cons (propertize
+                            (concat
+                             (string-pad (propertize (map-elt e :name)
+                                                     'face 'font-lock-variable-name-face)
+                                         (1+ name-width))
+                             (string-pad (propertize (map-elt e :status)
+                                                     'face (pcase (map-elt e :status)
+                                                             ("busy" 'warning)
+                                                             ("blocked" 'error)
+                                                             (_ 'success)))
+                                         (1+ status-width))
+                             (propertize (map-elt e :title)
+                                         'face 'font-lock-doc-markup-face))
+                            'agent-shell--icon (map-elt e :icon))
+                           (map-elt e :buffer)))
+                   entries))
+         ;; Bind `this-command' so completion frameworks don't append
+         ;; "(nil)" to each candidate (see `agent-shell--prompt-select-session').
+         (this-command 'agent-shell--read-shell-buffer)
+         (completion-styles (cons 'substring completion-styles))
+         (selection (completing-read
+                     (or prompt "Agent shell buffer: ")
+                     (lambda (string pred action)
+                       (if (eq action 'metadata)
+                           '(metadata
+                             (display-sort-function . identity)
+                             (affixation-function
+                              . agent-shell--icon-affixation))
+                         (complete-with-action action (mapcar #'car choices)
+                                               string pred)))
+                     nil t)))
+    (or (map-elt choices selection)
+        (user-error "Nothing selected"))))
+
+(defun agent-shell--icon-affixation (candidates)
+  "Return CANDIDATES annotated with the agent icon as a display-only prefix.
+Reads the icon from the `agent-shell--icon' text property so leading
+icon characters do not participate in `completing-read' matching."
+  (mapcar (lambda (candidate)
+            (let ((icon (get-text-property 0 'agent-shell--icon candidate)))
+              (list candidate
+                    (if icon (concat icon " ") "")
+                    "")))
+          candidates))
+
+(defun agent-shell-switch-buffer ()
+  "Switch to another `agent-shell-mode' buffer via `completing-read'.
+When `agent-shell-prefer-viewport-interaction' is non-nil and an
+associated viewport buffer exists, switch to that instead."
+  (interactive)
+  (let ((shell-buffer (agent-shell--read-shell-buffer
+                       :prompt "Switch to agent-shell buffer: ")))
+    (switch-to-buffer (or (when agent-shell-prefer-viewport-interaction
+                            (agent-shell-viewport--buffer
+                             :shell-buffer shell-buffer
+                             :existing-only t))
+                          shell-buffer))))
 
 (defun agent-shell-version ()
   "Show `agent-shell' mode version."
@@ -4885,10 +4986,9 @@ Falls back to latest session in batch mode (e.g. tests)."
                                           new-session-choice)))
           (pcase (map-elt session-choices selection)
             (:other-shell
-             (let ((other-shell (get-buffer
-                                 (completing-read "Switch to shell buffer: "
-                                                  (mapcar #'buffer-name other-shells)
-                                                  nil t)))
+             (let ((other-shell (agent-shell--read-shell-buffer
+                                 :prompt "Switch to shell buffer: "
+                                 :buffers other-shells))
                    (bootstrapping-shell (map-elt (agent-shell--state) :buffer)))
                (agent-shell--display-buffer other-shell)
                (kill-buffer bootstrapping-shell)
@@ -5775,9 +5875,7 @@ Returns a buffer object or nil."
                                             (list start-new start-downloads start-temp open-existing) nil t)))
               (cond
                ((equal choice open-existing)
-                (get-buffer (completing-read "Switch to shell buffer: "
-                                             (mapcar #'buffer-name (agent-shell-buffers))
-                                             nil t)))
+                (agent-shell--read-shell-buffer :prompt "Switch to shell buffer: "))
                ((equal choice start-downloads)
                 (agent-shell-new-downloads-shell :no-display t))
                ((equal choice start-temp)
@@ -6029,10 +6127,8 @@ When PICK-SHELL is non-nil, prompt for which shell buffer to use."
                         (list (completing-read "Send file: " (agent-shell--project-files)))
                         (user-error "No file to send"))))
            (shell-buffer (when pick-shell
-                           (completing-read "Send file to shell: "
-                                            (mapcar #'buffer-name (or (agent-shell-buffers)
-                                                                      (user-error "No shells available")))
-                                            nil t))))
+                           (agent-shell--read-shell-buffer
+                            :prompt "Send file to shell: "))))
       (agent-shell-insert :text (agent-shell--get-files-context :files files)
                           :shell-buffer shell-buffer))))
 
@@ -6096,10 +6192,8 @@ When PICK-SHELL is non-nil, prompt for which shell buffer to use."
   (let* ((screenshots-dir (agent-shell--dot-subdir "screenshots"))
          (screenshot-path (agent-shell--capture-screenshot :destination-dir screenshots-dir))
          (shell-buffer (when pick-shell
-                         (completing-read "Send screenshot to shell: "
-                                          (mapcar #'buffer-name (or (agent-shell-buffers)
-                                                                    (user-error "No shells available")))
-                                          nil t))))
+                         (agent-shell--read-shell-buffer
+                          :prompt "Send screenshot to shell: "))))
     (agent-shell-insert
      :text (agent-shell--get-files-context :files (list screenshot-path))
      :shell-buffer shell-buffer)))
@@ -6125,10 +6219,8 @@ When PICK-SHELL is non-nil, prompt for which shell buffer to use."
   (let* ((screenshots-dir (agent-shell--dot-subdir "screenshots"))
          (image-path (agent-shell--save-clipboard-image :destination-dir screenshots-dir))
          (shell-buffer (when pick-shell
-                         (completing-read "Send image to shell: "
-                                          (mapcar #'buffer-name (or (agent-shell-buffers)
-                                                                    (user-error "No shells available")))
-                                          nil t))))
+                         (agent-shell--read-shell-buffer
+                          :prompt "Send image to shell: "))))
     (agent-shell-insert
      :text (agent-shell--get-files-context :files (list image-path))
      :shell-buffer shell-buffer)))
@@ -6795,10 +6887,8 @@ Uses optional SHELL-BUFFER to make paths relative to shell project."
 When PICK-SHELL is non-nil, prompt for which shell buffer to use."
   (interactive)
   (let ((shell-buffer (or (when pick-shell
-                            (completing-read "Send region to shell: "
-                                             (mapcar #'buffer-name (or (agent-shell-buffers)
-                                                                       (user-error "No shells available")))
-                                             nil t))
+                            (agent-shell--read-shell-buffer
+                             :prompt "Send region to shell: "))
                           (agent-shell--shell-buffer))))
     (agent-shell-insert
      :text (agent-shell--get-region-context
