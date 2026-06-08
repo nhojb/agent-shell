@@ -1630,10 +1630,89 @@ COMMAND, when present, may be a shell command string or an argv vector."
   "Return non-nil if STATE has in-flight requests awaiting responses."
   (map-elt state :active-requests))
 
+(defun agent-shell--session-bound-notification-p (acp-notification)
+  "Return non-nil if ACP-NOTIFICATION reports session request progress.
+
+These notifications must arrive while an agent request is in
+flight (`session/prompt', `session/load', or `session/push').
+A server emitting one with no request active is non-conformant."
+  (and (equal (map-elt acp-notification 'method) "session/update")
+       (member (map-nested-elt acp-notification '(params update sessionUpdate))
+               '("tool_call" "tool_call_update"
+                 "agent_thought_chunk" "agent_message_chunk"
+                 "user_message_chunk" "plan"))))
+
+(defun agent-shell--make-out-of-session-turn-notification-body (state acp-notification)
+  "Build a fragment body for ACP-NOTIFICATION arriving out of turn.
+Frames the event as a protocol violation by the ACP server and
+points the user at STATE's agent for reporting, since the bug is
+not in agent-shell."
+  (let ((agent-name (or (map-nested-elt state '(:agent-config :mode-line-name))
+                        (map-nested-elt state '(:agent-config :buffer-name))
+                        "the ACP server")))
+    (format "This `session/update` arrived after the turn ended, which
+violates the ACP protocol — per-turn updates must arrive while
+a `session/prompt' is active.
+
+This is a bug in %s, not in agent-shell.  Please report it to
+the maintainer with the payload below:
+
+```json
+%s
+```
+
+"
+            agent-name
+            (with-temp-buffer
+              (insert (json-serialize acp-notification))
+              (json-pretty-print (point-min) (point-max))
+              (buffer-string)))))
+
+(defun agent-shell--make-unhandled-notification-body (acp-notification)
+  "Build a fragment body for an ACP-NOTIFICATION we have no handler for.
+Includes pretty-printed JSON and a `file a feature request' link."
+  (format "Unhandled notification (%s) and include:
+
+```json
+%s
+```
+
+"
+          (agent-shell-ui-add-action-to-text
+           "please file a feature request"
+           (lambda ()
+             (interactive)
+             (browse-url "https://github.com/xenodium/agent-shell/issues/new/choose"))
+           (lambda ()
+             (message "Press RET to open URL"))
+           'link)
+          (with-temp-buffer
+            (insert (json-serialize acp-notification))
+            (json-pretty-print (point-min) (point-max))
+            (buffer-string))))
+
 (cl-defun agent-shell--on-notification (&key state acp-notification)
   "Handle incoming ACP-NOTIFICATION using STATE."
   (map-put! state :last-activity-time (current-time))
-  (cond ((equal (map-elt acp-notification 'method) "session/update")
+  (cond ((and (not (agent-shell--active-requests-p state))
+              (agent-shell--session-bound-notification-p acp-notification))
+         ;; Turn-bound notification arriving with no agent request in
+         ;; flight is a protocol violation: these notifications must
+         ;; accompany an active `session/prompt', `session/load', or
+         ;; `session/push'.  Show it visibly above the fresh prompt so
+         ;; users can report it.  Session-level updates (usage_update,
+         ;; current_mode_update, session_info_update, etc.) fall
+         ;; through to their normal handlers below — they're
+         ;; legitimate any time.
+         (agent-shell--update-fragment
+          :state state
+          :block-id "out-of-turn-acp-bug"
+          :label-left (propertize "Out of turn — ACP server bug"
+                                  'font-lock-face 'font-lock-doc-markup-face)
+          :body (agent-shell--make-out-of-session-turn-notification-body state acp-notification)
+          :append t
+          :above-last-prompt t))
+        ((equal (map-elt acp-notification 'method) "session/update")
          (cond
           ;; Restore-summary mode: buffer chunks during session/load
           ;; and suppress normal rendering.  The summary fragments are
@@ -1641,122 +1720,98 @@ COMMAND, when present, may be a shell command string or an argv vector."
           ((map-elt state :restore-summary)
            (agent-shell--restore-summary-handle-notification state acp-notification))
           ((equal (map-nested-elt acp-notification '(params update sessionUpdate)) "tool_call")
-           ;; Notification is out of context (session/prompt finished).
-           ;; Cannot derive where to display, so show in minibuffer.
-           (if (not (agent-shell--active-requests-p state))
-               (when acp-logging-enabled
-                 (message "%s %s (stale, consider reporting to ACP agent)"
-                          (agent-shell--make-status-kind-label
-                           :status (map-nested-elt acp-notification '(params update status))
-                           :kind (map-nested-elt acp-notification '(params update kind)))
-                          (propertize (or (map-nested-elt acp-notification '(params update title)) "")
-                                      'face font-lock-doc-markup-face)))
-             (agent-shell--save-tool-call
-              state
-              (map-nested-elt acp-notification '(params update toolCallId))
-              (append (list (cons :title (cond
-                                          ((and (string= (map-nested-elt acp-notification '(params update title)) "Skill")
-                                                (map-nested-elt acp-notification '(params update rawInput command)))
-                                           (format "Skill: %s"
-                                                   (agent-shell--tool-call-command-to-string
-                                                    (map-nested-elt acp-notification '(params update rawInput command)))))
-                                          (t
-                                           (map-nested-elt acp-notification '(params update title)))))
-                            (cons :status (map-nested-elt acp-notification '(params update status)))
-                            (cons :kind (map-nested-elt acp-notification '(params update kind)))
-                            (cons :command (agent-shell--tool-call-command-to-string
-                                            (map-nested-elt acp-notification '(params update rawInput command))))
-                            (cons :description (map-nested-elt acp-notification '(params update rawInput description)))
-                            (cons :content (map-nested-elt acp-notification '(params update content)))
-                            (cons :raw-input (map-nested-elt acp-notification '(params update rawInput))))
-                      (when-let* ((diff (agent-shell--make-diff-info
-                                         :acp-tool-call (map-nested-elt acp-notification '(params update)))))
-                        (list (cons :diff diff)))))
-             (agent-shell--cancel-idle-timer)
-             (agent-shell--emit-event
-              :event 'tool-call-update
-              :data (list (cons :tool-call-id (map-nested-elt acp-notification '(params update toolCallId)))
-                          (cons :tool-call (map-nested-elt state (list :tool-calls (map-nested-elt acp-notification '(params update toolCallId)))))))
-             (let ((tool-call-labels (agent-shell-make-tool-call-label
-                                      state (map-nested-elt acp-notification '(params update toolCallId)))))
+           (agent-shell--save-tool-call
+            state
+            (map-nested-elt acp-notification '(params update toolCallId))
+            (append (list (cons :title (cond
+                                        ((and (string= (map-nested-elt acp-notification '(params update title)) "Skill")
+                                              (map-nested-elt acp-notification '(params update rawInput command)))
+                                         (format "Skill: %s"
+                                                 (agent-shell--tool-call-command-to-string
+                                                  (map-nested-elt acp-notification '(params update rawInput command)))))
+                                        (t
+                                         (map-nested-elt acp-notification '(params update title)))))
+                          (cons :status (map-nested-elt acp-notification '(params update status)))
+                          (cons :kind (map-nested-elt acp-notification '(params update kind)))
+                          (cons :command (agent-shell--tool-call-command-to-string
+                                          (map-nested-elt acp-notification '(params update rawInput command))))
+                          (cons :description (map-nested-elt acp-notification '(params update rawInput description)))
+                          (cons :content (map-nested-elt acp-notification '(params update content)))
+                          (cons :raw-input (map-nested-elt acp-notification '(params update rawInput))))
+                    (when-let* ((diff (agent-shell--make-diff-info
+                                       :acp-tool-call (map-nested-elt acp-notification '(params update)))))
+                      (list (cons :diff diff)))))
+           (agent-shell--cancel-idle-timer)
+           (agent-shell--emit-event
+            :event 'tool-call-update
+            :data (list (cons :tool-call-id (map-nested-elt acp-notification '(params update toolCallId)))
+                        (cons :tool-call (map-nested-elt state (list :tool-calls (map-nested-elt acp-notification '(params update toolCallId)))))))
+           (let ((tool-call-labels (agent-shell-make-tool-call-label
+                                    state (map-nested-elt acp-notification '(params update toolCallId)))))
+             (agent-shell--update-fragment
+              :state state
+              :block-id (map-nested-elt acp-notification '(params update toolCallId))
+              :label-left (map-elt tool-call-labels :status)
+              :label-right (map-elt tool-call-labels :title)
+              :expanded agent-shell-tool-use-expand-by-default)
+             ;; Display plan as markdown block if present
+             (when (map-nested-elt acp-notification '(params update rawInput plan))
                (agent-shell--update-fragment
                 :state state
-                :block-id (map-nested-elt acp-notification '(params update toolCallId))
-                :label-left (map-elt tool-call-labels :status)
-                :label-right (map-elt tool-call-labels :title)
-                :expanded agent-shell-tool-use-expand-by-default)
-               ;; Display plan as markdown block if present
-               (when (map-nested-elt acp-notification '(params update rawInput plan))
-                 (agent-shell--update-fragment
-                  :state state
-                  :block-id (concat (map-nested-elt acp-notification '(params update toolCallId)) "-plan")
-                  :label-left (propertize "Proposed plan" 'font-lock-face 'font-lock-doc-markup-face)
-                  :body (agent-shell--format-plan (map-nested-elt acp-notification '(params update rawInput plan)))
-                  :expanded t)))
-             (map-put! state :last-entry-type "tool_call")))
+                :block-id (concat (map-nested-elt acp-notification '(params update toolCallId)) "-plan")
+                :label-left (propertize "Proposed plan" 'font-lock-face 'font-lock-doc-markup-face)
+                :body (agent-shell--format-plan (map-nested-elt acp-notification '(params update rawInput plan)))
+                :expanded t)))
+           (map-put! state :last-entry-type "tool_call"))
           ((equal (map-nested-elt acp-notification '(params update sessionUpdate)) "agent_thought_chunk")
-           ;; Notification is out of context (session/prompt finished).
-           ;; Cannot derive where to display, so show in minibuffer.
-           (if (not (agent-shell--active-requests-p state))
-               (when acp-logging-enabled
-                 (message "%s %s (stale, consider reporting to ACP agent): %s"
+           (unless (equal (map-elt state :last-entry-type)
+                          "agent_thought_chunk")
+             (map-put! state :chunked-group-count (1+ (map-elt state :chunked-group-count)))
+             (agent-shell--append-transcript
+              :text (format "## Agent's Thoughts (%s)\n\n" (format-time-string "%F %T"))
+              :file-path agent-shell--transcript-file))
+           (agent-shell--append-transcript
+            :text (agent-shell--indent-markdown-headers
+                   (map-nested-elt acp-notification '(params update content text)))
+            :file-path agent-shell--transcript-file)
+           (agent-shell--update-fragment
+            :state state
+            :block-id (format "%s-agent_thought_chunk"
+                              (map-elt state :chunked-group-count))
+            :label-left  (concat
                           agent-shell-thought-process-icon
-                          (propertize "Thinking" 'face font-lock-doc-markup-face)
-                          (truncate-string-to-width (map-nested-elt acp-notification '(params update content text)) 100)))
-             (unless (equal (map-elt state :last-entry-type)
-                            "agent_thought_chunk")
-               (map-put! state :chunked-group-count (1+ (map-elt state :chunked-group-count)))
-               (agent-shell--append-transcript
-                :text (format "## Agent's Thoughts (%s)\n\n" (format-time-string "%F %T"))
-                :file-path agent-shell--transcript-file))
-             (agent-shell--append-transcript
-              :text (agent-shell--indent-markdown-headers
-                     (map-nested-elt acp-notification '(params update content text)))
-              :file-path agent-shell--transcript-file)
-             (agent-shell--update-fragment
-              :state state
-              :block-id (format "%s-agent_thought_chunk"
-                                (map-elt state :chunked-group-count))
-              :label-left  (concat
-                            agent-shell-thought-process-icon
-                            " "
-                            (propertize "Thinking" 'font-lock-face font-lock-doc-markup-face))
-              :body (map-nested-elt acp-notification '(params update content text))
-              :append (equal (map-elt state :last-entry-type)
-                             "agent_thought_chunk")
-              :expanded agent-shell-thought-process-expand-by-default)
-             (map-put! state :last-entry-type "agent_thought_chunk")))
+                          " "
+                          (propertize "Thinking" 'font-lock-face font-lock-doc-markup-face))
+            :body (map-nested-elt acp-notification '(params update content text))
+            :append (equal (map-elt state :last-entry-type)
+                           "agent_thought_chunk")
+            :expanded agent-shell-thought-process-expand-by-default)
+           (map-put! state :last-entry-type "agent_thought_chunk"))
           ((equal (map-nested-elt acp-notification '(params update sessionUpdate)) "agent_message_chunk")
-           ;; Notification is out of context (session/prompt finished).
-           ;; Cannot derive where to display, so show in minibuffer.
-           (if (not (agent-shell--active-requests-p state))
-               (when acp-logging-enabled
-                 (message "Agent message (stale, consider reporting to ACP agent): %s"
-                          (truncate-string-to-width (map-nested-elt acp-notification '(params update content text)) 100)))
-             (unless (equal (map-elt state :last-entry-type) "agent_message_chunk")
-               (map-put! state :chunked-group-count (1+ (map-elt state :chunked-group-count)))
-               (agent-shell--append-transcript
-                :text (format "\n## Agent (%s)\n\n" (format-time-string "%F %T"))
-                :file-path agent-shell--transcript-file))
-             ;; Indent markdown headers in LLM output so they nest
-             ;; below the transcript's ## section headers.  Applied
-             ;; per-chunk: if a header is split across chunks it may
-             ;; not be indented (graceful degradation).
+           (unless (equal (map-elt state :last-entry-type) "agent_message_chunk")
+             (map-put! state :chunked-group-count (1+ (map-elt state :chunked-group-count)))
              (agent-shell--append-transcript
-              :text (agent-shell--indent-markdown-headers
-                     (map-nested-elt acp-notification '(params update content text)))
-              :file-path agent-shell--transcript-file)
-             (agent-shell--update-fragment
-              :state state
-              :block-id (format "%s-agent_message_chunk"
-                                (map-elt state :chunked-group-count))
-              :body (map-nested-elt acp-notification '(params update content text))
-              :create-new (not (equal (map-elt state :last-entry-type)
-                                      "agent_message_chunk"))
-              :append t
-              :navigation 'never
-              :render-body-images t)
-             (map-put! state :last-entry-type "agent_message_chunk")))
+              :text (format "\n## Agent (%s)\n\n" (format-time-string "%F %T"))
+              :file-path agent-shell--transcript-file))
+           ;; Indent markdown headers in LLM output so they nest
+           ;; below the transcript's ## section headers.  Applied
+           ;; per-chunk: if a header is split across chunks it may
+           ;; not be indented (graceful degradation).
+           (agent-shell--append-transcript
+            :text (agent-shell--indent-markdown-headers
+                   (map-nested-elt acp-notification '(params update content text)))
+            :file-path agent-shell--transcript-file)
+           (agent-shell--update-fragment
+            :state state
+            :block-id (format "%s-agent_message_chunk"
+                              (map-elt state :chunked-group-count))
+            :body (map-nested-elt acp-notification '(params update content text))
+            :create-new (not (equal (map-elt state :last-entry-type)
+                                    "agent_message_chunk"))
+            :append t
+            :navigation 'never
+            :render-body-images t)
+           (map-put! state :last-entry-type "agent_message_chunk"))
           ((equal (map-nested-elt acp-notification '(params update sessionUpdate)) "user_message_chunk")
            ;; Only handle user_message_chunks when there's an active session/load
            ;; or session/push to avoid inserting a redundant shell prompt
@@ -1805,126 +1860,116 @@ COMMAND, when present, may be a shell command string or an argv vector."
             :expanded t)
            (map-put! state :last-entry-type "plan"))
           ((equal (map-nested-elt acp-notification '(params update sessionUpdate)) "tool_call_update")
-           ;; Notification is out of context (session/prompt finished).
-           ;; Cannot derive where to display, so show in minibuffer.
-           (if (not (agent-shell--active-requests-p state))
-               (when acp-logging-enabled
-                 (message "%s %s (stale, consider reporting to ACP agent)"
-                          (agent-shell--make-status-kind-label
-                           :status (map-nested-elt acp-notification '(params update status))
-                           :kind (map-nested-elt acp-notification '(params update kind)))
-                          (propertize (or (map-nested-elt acp-notification '(params update title)) "")
-                                      'face font-lock-doc-markup-face)))
-             ;; Update stored tool call data with new status and content
-             (agent-shell--save-tool-call
-              state
-              (map-nested-elt acp-notification '(params update toolCallId))
-              (append (list (cons :status (map-nested-elt acp-notification '(params update status)))
-                            (cons :content (map-nested-elt acp-notification '(params update content))))
-                      ;; The initial tool_call notification often has a
-                      ;; generic title (eg. "grep", "bash", "Read").
-                      ;; The tool_call_update may have a more descriptive
-                      ;; title (eg. 'grep -i -n "tool" /path/to/file').
-                      ;; Upgrade to the more descriptive title when available.
-                      ;; See https://github.com/xenodium/agent-shell/issues/182
-                      ;; See https://github.com/xenodium/agent-shell/issues/309
-                      (when-let* ((new-title (map-nested-elt acp-notification '(params update title)))
-                                  ((not (string-empty-p new-title))))
-                        (list (cons :title new-title)))
-                      (when-let* ((description (agent-shell--tool-call-command-to-string
-                                                (map-nested-elt acp-notification '(params update rawInput description)))))
-                        (list (cons :description description)))
-                      (when-let* ((command (agent-shell--tool-call-command-to-string
-                                            (map-nested-elt acp-notification '(params update rawInput command)))))
-                        (list (cons :command command)))
-                      (when-let* ((raw-input (map-nested-elt acp-notification '(params update rawInput))))
-                        (list (cons :raw-input raw-input)))
-                      (when-let* ((locations (map-nested-elt acp-notification '(params update locations))))
-                        (list (cons :locations locations)))
-                      (when-let* ((diff (agent-shell--make-diff-info
-                                         :acp-tool-call (map-nested-elt acp-notification '(params update)))))
-                        (list (cons :diff diff)))))
-             ;; OpenCode sends tool_call_update with the populated rawInput
-             ;; after session/request_permission, so an open permission
-             ;; dialog needs a re-render to surface the arguments.
-             ;; See https://github.com/xenodium/agent-shell/issues/617
-             (when-let* ((tool-call-id (map-nested-elt acp-notification '(params update toolCallId)))
-                         (tool-call (map-nested-elt state (list :tool-calls tool-call-id)))
-                         ((map-elt tool-call :permission-request-id)))
+           ;; Update stored tool call data with new status and content
+           (agent-shell--save-tool-call
+            state
+            (map-nested-elt acp-notification '(params update toolCallId))
+            (append (list (cons :status (map-nested-elt acp-notification '(params update status)))
+                          (cons :content (map-nested-elt acp-notification '(params update content))))
+                    ;; The initial tool_call notification often has a
+                    ;; generic title (eg. "grep", "bash", "Read").
+                    ;; The tool_call_update may have a more descriptive
+                    ;; title (eg. 'grep -i -n "tool" /path/to/file').
+                    ;; Upgrade to the more descriptive title when available.
+                    ;; See https://github.com/xenodium/agent-shell/issues/182
+                    ;; See https://github.com/xenodium/agent-shell/issues/309
+                    (when-let* ((new-title (map-nested-elt acp-notification '(params update title)))
+                                ((not (string-empty-p new-title))))
+                      (list (cons :title new-title)))
+                    (when-let* ((description (agent-shell--tool-call-command-to-string
+                                              (map-nested-elt acp-notification '(params update rawInput description)))))
+                      (list (cons :description description)))
+                    (when-let* ((command (agent-shell--tool-call-command-to-string
+                                          (map-nested-elt acp-notification '(params update rawInput command)))))
+                      (list (cons :command command)))
+                    (when-let* ((raw-input (map-nested-elt acp-notification '(params update rawInput))))
+                      (list (cons :raw-input raw-input)))
+                    (when-let* ((locations (map-nested-elt acp-notification '(params update locations))))
+                      (list (cons :locations locations)))
+                    (when-let* ((diff (agent-shell--make-diff-info
+                                       :acp-tool-call (map-nested-elt acp-notification '(params update)))))
+                      (list (cons :diff diff)))))
+           ;; OpenCode sends tool_call_update with the populated rawInput
+           ;; after session/request_permission, so an open permission
+           ;; dialog needs a re-render to surface the arguments.
+           ;; See https://github.com/xenodium/agent-shell/issues/617
+           (when-let* ((tool-call-id (map-nested-elt acp-notification '(params update toolCallId)))
+                       (tool-call (map-nested-elt state (list :tool-calls tool-call-id)))
+                       ((map-elt tool-call :permission-request-id)))
+             (agent-shell--update-fragment
+              :state state
+              :block-id (format "permission-%s" tool-call-id)
+              :body (with-current-buffer (map-elt state :buffer)
+                      (agent-shell--make-tool-call-permission-text
+                       :tool-call tool-call
+                       :tool-call-id tool-call-id
+                       :client (map-elt state :client)
+                       :state state))
+              :expanded t
+              :navigation 'never))
+           (agent-shell--cancel-idle-timer)
+           (agent-shell--emit-event
+            :event 'tool-call-update
+            :data (list (cons :tool-call-id (map-nested-elt acp-notification '(params update toolCallId)))
+                        (cons :tool-call (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)))))))
+           (let* ((diff (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)) :diff)))
+                  (output (concat
+                           "\n\n"
+                           ;; TODO: Consider if there are other
+                           ;; types of content to display.
+                           (mapconcat (lambda (item)
+                                        (map-nested-elt item '(content text)))
+                                      (map-nested-elt acp-notification '(params update content))
+                                      "\n\n")
+                           "\n\n"))
+                  (diff-text (agent-shell--format-diff-as-text diff))
+                  (body-text (if diff-text
+                                 (concat output
+                                         "\n\n"
+                                         "╭─────────╮\n"
+                                         "│ changes │\n"
+                                         "╰─────────╯\n\n" diff-text)
+                               output)))
+             ;; Log tool call to transcript when completed or failed
+             (when (and (map-nested-elt acp-notification '(params update status))
+                        (member (map-nested-elt acp-notification '(params update status)) '("completed" "failed")))
+               (agent-shell--append-transcript
+                :text (agent-shell--make-transcript-tool-call-entry
+                       :status (map-nested-elt acp-notification '(params update status))
+                       :title (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)) :title))
+                       :kind (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)) :kind))
+                       :description (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)) :description))
+                       :command (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)) :command))
+                       :parameters (agent-shell--extract-tool-parameters
+                                    (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)) :raw-input)))
+                       :output body-text)
+                :file-path agent-shell--transcript-file))
+             ;; Hide permission after sending response.
+             ;; Status is completed or failed so the user
+             ;; likely selected one of: accepted/rejected/always.
+             ;; Remove stale permission dialog.
+             (when (member (map-nested-elt acp-notification '(params update status))
+                           '("completed" "failed"))
+               ;; block-id must be the same as the one used as
+               ;; agent-shell--update-fragment param by "session/request_permission".
+               (agent-shell--delete-fragment :state state :block-id (format "permission-%s" (map-nested-elt acp-notification '(params update toolCallId)))))
+             (let* ((tool-call-labels (agent-shell-make-tool-call-label state (map-nested-elt acp-notification '(params update toolCallId))))
+                    (saved-command (map-nested-elt state `(:tool-calls
+                                                           ,(map-nested-elt acp-notification '(params update toolCallId))
+                                                           :command)))
+                    ;; Prepend fenced command to body.
+                    (command-block (when saved-command
+                                     (concat "```console\n" saved-command "\n```"))))
                (agent-shell--update-fragment
                 :state state
-                :block-id (format "permission-%s" tool-call-id)
-                :body (with-current-buffer (map-elt state :buffer)
-                        (agent-shell--make-tool-call-permission-text
-                         :tool-call tool-call
-                         :tool-call-id tool-call-id
-                         :client (map-elt state :client)
-                         :state state))
-                :expanded t
-                :navigation 'never))
-             (agent-shell--cancel-idle-timer)
-             (agent-shell--emit-event
-              :event 'tool-call-update
-              :data (list (cons :tool-call-id (map-nested-elt acp-notification '(params update toolCallId)))
-                          (cons :tool-call (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)))))))
-             (let* ((diff (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)) :diff)))
-                    (output (concat
-                             "\n\n"
-                             ;; TODO: Consider if there are other
-                             ;; types of content to display.
-                             (mapconcat (lambda (item)
-                                          (map-nested-elt item '(content text)))
-                                        (map-nested-elt acp-notification '(params update content))
-                                        "\n\n")
-                             "\n\n"))
-                    (diff-text (agent-shell--format-diff-as-text diff))
-                    (body-text (if diff-text
-                                   (concat output
-                                           "\n\n"
-                                           "╭─────────╮\n"
-                                           "│ changes │\n"
-                                           "╰─────────╯\n\n" diff-text)
-                                 output)))
-               ;; Log tool call to transcript when completed or failed
-               (when (and (map-nested-elt acp-notification '(params update status))
-                          (member (map-nested-elt acp-notification '(params update status)) '("completed" "failed")))
-                 (agent-shell--append-transcript
-                  :text (agent-shell--make-transcript-tool-call-entry
-                         :status (map-nested-elt acp-notification '(params update status))
-                         :title (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)) :title))
-                         :kind (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)) :kind))
-                         :description (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)) :description))
-                         :command (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)) :command))
-                         :parameters (agent-shell--extract-tool-parameters
-                                      (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)) :raw-input)))
-                         :output body-text)
-                  :file-path agent-shell--transcript-file))
-               ;; Hide permission after sending response.
-               ;; Status is completed or failed so the user
-               ;; likely selected one of: accepted/rejected/always.
-               ;; Remove stale permission dialog.
-               (when (member (map-nested-elt acp-notification '(params update status))
-                             '("completed" "failed"))
-                 ;; block-id must be the same as the one used as
-                 ;; agent-shell--update-fragment param by "session/request_permission".
-                 (agent-shell--delete-fragment :state state :block-id (format "permission-%s" (map-nested-elt acp-notification '(params update toolCallId)))))
-               (let* ((tool-call-labels (agent-shell-make-tool-call-label state (map-nested-elt acp-notification '(params update toolCallId))))
-                      (saved-command (map-nested-elt state `(:tool-calls
-                                                             ,(map-nested-elt acp-notification '(params update toolCallId))
-                                                             :command)))
-                      ;; Prepend fenced command to body.
-                      (command-block (when saved-command
-                                       (concat "```console\n" saved-command "\n```"))))
-                 (agent-shell--update-fragment
-                  :state state
-                  :block-id (map-nested-elt acp-notification '(params update toolCallId))
-                  :label-left (map-elt tool-call-labels :status)
-                  :label-right (map-elt tool-call-labels :title)
-                  :body (if command-block
-                            (concat command-block "\n\n" (string-trim body-text))
-                          (string-trim body-text))
-                  :expanded agent-shell-tool-use-expand-by-default)))
-             (map-put! state :last-entry-type "tool_call_update")))
+                :block-id (map-nested-elt acp-notification '(params update toolCallId))
+                :label-left (map-elt tool-call-labels :status)
+                :label-right (map-elt tool-call-labels :title)
+                :body (if command-block
+                          (concat command-block "\n\n" (string-trim body-text))
+                        (string-trim body-text))
+                :expanded agent-shell-tool-use-expand-by-default)))
+           (map-put! state :last-entry-type "tool_call_update"))
           ((equal (map-nested-elt acp-notification '(params update sessionUpdate)) "available_commands_update")
            (map-put! state :available-commands (map-nested-elt acp-notification '(params update availableCommands)))
            (agent-shell--update-fragment
@@ -1973,34 +2018,22 @@ COMMAND, when present, may be a shell command string or an argv vector."
           (acp-logging-enabled
            (agent-shell--update-fragment
             :state state
-            :block-id "Session Update - fallback"
-            :body (format "%s" acp-notification)
-            :create-new t
-            :navigation 'never)
+            :block-id "unhandled-notification"
+            :label-left (propertize "Unhandled"
+                                    'font-lock-face 'font-lock-doc-markup-face)
+            :body (agent-shell--make-unhandled-notification-body acp-notification)
+            :append t
+            :above-last-prompt (not (shell-maker-busy)))
            (map-put! state :last-entry-type nil))))
         (acp-logging-enabled
          (agent-shell--update-fragment
           :state state
-          :block-id "Notification - fallback"
-          :body (format "Unhandled notification (%s) and include:
-
-```json
-%s
-```"
-                        (agent-shell-ui-add-action-to-text
-                         "please file a feature request"
-                         (lambda ()
-                           (interactive)
-                           (browse-url "https://github.com/xenodium/agent-shell/issues/new/choose"))
-                         (lambda ()
-                           (message "Press RET to open URL"))
-                         'link)
-                        (with-temp-buffer
-                          (insert (json-serialize acp-notification))
-                          (json-pretty-print (point-min) (point-max))
-                          (buffer-string)))
-          :create-new t
-          :navigation 'never)
+          :block-id "unhandled-notification"
+          :label-left (propertize "Unhandled"
+                                  'font-lock-face 'font-lock-doc-markup-face)
+          :body (agent-shell--make-unhandled-notification-body acp-notification)
+          :append t
+          :above-last-prompt (not (shell-maker-busy)))
          (map-put! state :last-entry-type nil))))
 
 (cl-defun agent-shell--on-request (&key state acp-request)
@@ -3140,7 +3173,7 @@ variable (see makunbound)"))
 
 (cl-defun agent-shell--update-fragment (&key state namespace-id block-id label-left label-right
                                              body append create-new navigation expanded
-                                             render-body-images)
+                                             render-body-images above-last-prompt)
   "Update fragment in the shell buffer.
 
 Creates or updates existing dialog using STATE's request count as namespace
@@ -3152,7 +3185,10 @@ Dialog can have LABEL-LEFT, LABEL-RIGHT, and BODY.
 
 Optional flags: APPEND text to existing content, CREATE-NEW block,
 NAVIGATION for navigation style, EXPANDED to show block expanded
-by default, RENDER-BODY-IMAGES to enable inline image rendering in body."
+by default, RENDER-BODY-IMAGES to enable inline image rendering in
+body, ABOVE-LAST-PROMPT to land content above the active prompt
+instead of after it (typical for notifications arriving out of
+turn)."
   (when label-right
     (setq label-right (string-trim label-right)))
   ;; Convert non-standard multiline single-backtick code spans to fenced
@@ -3229,21 +3265,42 @@ by default, RENDER-BODY-IMAGES to enable inline image rendering in body."
            (saved-point (point))
            (saved-mark (mark t))
            (saved-mark-active mark-active)
-           (saved-window-start (and window (window-start window))))
-      (shell-maker-with-auto-scroll-edit
-       (when-let* ((range (agent-shell-ui-update-fragment
-                           (agent-shell-ui-make-fragment-model
-                            :namespace-id (or namespace-id
-                                              (map-elt state :request-count))
-                            :block-id block-id
-                            :label-left label-left
-                            :label-right label-right
-                            :body body)
-                           :navigation navigation
-                           :append append
-                           :create-new create-new
-                           :expanded expanded
-                           :no-undo t))
+           (saved-window-start (and window (window-start window)))
+           ;; Caller is asking us to land content above the active
+           ;; prompt (typical for notifications arriving after
+           ;; `end_turn').  Narrow above the prompt so the fragment
+           ;; system inserts there, and flip the prompt-start marker's
+           ;; insertion-type so it advances past the new text rather
+           ;; than ending up stranded inside it.  Falls back to the
+           ;; normal in-line path when no prompt sits at `point-max'.
+           (late-prompt-start (and above-last-prompt
+                                   comint-last-prompt
+                                   (marker-position (car comint-last-prompt))
+                                   (= (marker-position (cdr comint-last-prompt))
+                                      (point-max))
+                                   (car comint-last-prompt)))
+           (orig-insertion-type (and late-prompt-start
+                                     (marker-insertion-type late-prompt-start))))
+      (when late-prompt-start
+        (set-marker-insertion-type late-prompt-start t))
+      (unwind-protect
+       (save-restriction
+        (when late-prompt-start
+          (narrow-to-region (point-min) (marker-position late-prompt-start)))
+        (shell-maker-with-auto-scroll-edit
+         (when-let* ((range (agent-shell-ui-update-fragment
+                             (agent-shell-ui-make-fragment-model
+                              :namespace-id (or namespace-id
+                                                (map-elt state :request-count))
+                              :block-id block-id
+                              :label-left label-left
+                              :label-right label-right
+                              :body body)
+                             :navigation navigation
+                             :append append
+                             :create-new create-new
+                             :expanded expanded
+                             :no-undo t))
                    (padding-start (map-nested-elt range '(:padding :start)))
                    (padding-end (map-nested-elt range '(:padding :end)))
                    (block-start (map-nested-elt range '(:block :start)))
@@ -3278,7 +3335,18 @@ by default, RENDER-BODY-IMAGES to enable inline image rendering in body."
                (narrow-to-region label-right-start label-right-end)
                (agent-shell--render-markdown)
                (widen))))
-         (run-hook-with-args 'agent-shell-section-functions range)))
+         (run-hook-with-args 'agent-shell-section-functions range))))
+       (when late-prompt-start
+         (set-marker-insertion-type late-prompt-start orig-insertion-type)))
+      ;; Late-arrival inserts run under a narrow that ends at
+      ;; `comint-last-prompt'.  The auto-scroll branch of
+      ;; `shell-maker-with-auto-scroll-edit' goes to the narrowed
+      ;; `point-max' (= prompt-start position), leaving point stranded
+      ;; on the prompt's first char after the narrowing is dropped.
+      ;; When the user was at absolute eob (i.e. in the input area),
+      ;; restore them there instead.
+      (when (and late-prompt-start auto-scroll)
+        (goto-char (point-max)))
       (unless auto-scroll
         (goto-char saved-point)
         (when saved-mark
@@ -5269,21 +5337,16 @@ Each entry is normalized via `agent-shell--make-mcp-server'."
   (acp-subscribe-to-errors
    :client (map-elt state :client)
    :on-error (lambda (acp-error)
-               (if (agent-shell--active-requests-p state)
-                   (agent-shell--update-fragment
-                    :state state
-                    :block-id (format "%s-notices"
-                                      (map-elt state :request-count))
-                    :label-left (propertize "Notices" 'font-lock-face 'font-lock-doc-markup-face) ;;
-                    :body (or (map-elt acp-error 'message)
-                              (map-elt acp-error 'data)
-                              "Something is up ¯\\_ (ツ)_/¯")
-                    :append t)
-                 (when acp-logging-enabled
-                   (message "Agent notice (stale): %s"
-                            (or (map-elt acp-error 'message)
-                                (map-elt acp-error 'data)
-                                "Something is up ¯\\_ (ツ)_/¯"))))))
+               (agent-shell--update-fragment
+                :state state
+                :block-id (format "%s-notices"
+                                  (map-elt state :request-count))
+                :label-left (propertize "Notices" 'font-lock-face 'font-lock-doc-markup-face)
+                :body (or (map-elt acp-error 'message)
+                          (map-elt acp-error 'data)
+                          "Something is up ¯\\_ (ツ)_/¯")
+                :append t
+                :above-last-prompt (not (shell-maker-busy)))))
   (acp-subscribe-to-notifications
    :client (map-elt state :client)
    :on-notification (lambda (acp-notification)
