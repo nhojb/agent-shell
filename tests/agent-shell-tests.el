@@ -2971,10 +2971,22 @@ KIND is a sessionUpdate string such as \"user_message_chunk\"."
                                       (text . ,text))))))))
 )
 
-(ert-deftest agent-shell--restore-summary-picks-first-user-and-last-agent ()
-  "Test summary accumulation keeps first user prompt and last agent reply."
-  (let ((state (list (cons :restore-summary nil))))
-    (agent-shell--restore-summary-init state)
+(defun agent-shell-tests--pending-restore-prompt-turns (state)
+  "Return STATE's pending-restore prompt turns in chronological order.
+
+Each turn is a list of buffered notifications, oldest first.
+Empty turns are filtered out."
+  (seq-filter #'identity
+              (nreverse
+               (mapcar #'nreverse
+                       (map-elt (map-elt state :pending-restore) :prompt-turns)))))
+
+(ert-deftest agent-shell--pending-restore-groups-notifications-by-prompt-turn ()
+  "Test buffered notifications split into per-turn lists.
+
+A new turn begins when a `user_message_chunk' arrives after
+agent activity; consecutive user chunks stay in the same turn."
+  (let ((state (list (cons :pending-restore (agent-shell--make-pending-restore)))))
     (dolist (notif (list
                     (agent-shell-tests--make-session-update "user_message_chunk" "Hello ")
                     (agent-shell-tests--make-session-update "user_message_chunk" "world")
@@ -2983,28 +2995,33 @@ KIND is a sessionUpdate string such as \"user_message_chunk\"."
                     (agent-shell-tests--make-session-update "user_message_chunk" "second prompt")
                     (agent-shell-tests--make-session-update "agent_message_chunk" "intermediate")
                     (agent-shell-tests--make-session-update "tool_call" "ignored")
+                    (agent-shell-tests--make-session-update "user_message_chunk" "third prompt")
                     (agent-shell-tests--make-session-update "agent_message_chunk" "final answer")))
-      (agent-shell--restore-summary-handle-notification state notif))
-    (agent-shell--restore-summary-commit-in-flight
-     (map-elt state :restore-summary))
-    (should (equal (map-elt (map-elt state :restore-summary) :first-user)
-                   "Hello world"))
-    (should (equal (map-elt (map-elt state :restore-summary) :last-agent)
-                   "final answer"))))
+      (agent-shell--append-restore-notification state notif))
+    (let ((prompt-turns (agent-shell-tests--pending-restore-prompt-turns state)))
+      (should (= 3 (length prompt-turns)))
+      (should (equal (mapcar (lambda (notif)
+                               (map-nested-elt notif '(params update sessionUpdate)))
+                             (nth 0 prompt-turns))
+                     '("user_message_chunk" "user_message_chunk"
+                       "agent_message_chunk" "agent_message_chunk")))
+      (should (equal (mapcar (lambda (notif)
+                               (map-nested-elt notif '(params update sessionUpdate)))
+                             (nth 1 prompt-turns))
+                     '("user_message_chunk" "agent_message_chunk" "tool_call")))
+      (should (equal (mapcar (lambda (notif)
+                               (map-nested-elt notif '(params update sessionUpdate)))
+                             (nth 2 prompt-turns))
+                     '("user_message_chunk" "agent_message_chunk"))))))
 
-(ert-deftest agent-shell--restore-summary-handles-non-text-content ()
-  "Test summary accumulator falls back to a placeholder for non-text content."
-  (let ((state (list (cons :restore-summary nil))))
-    (agent-shell--restore-summary-init state)
-    (agent-shell--restore-summary-handle-notification
-     state
-     '((method . "session/update")
-       (params . ((update . ((sessionUpdate . "user_message_chunk")
-                             (content . ((type . "image")))))))))
-    (agent-shell--restore-summary-commit-in-flight
-     (map-elt state :restore-summary))
-    (should (equal (map-elt (map-elt state :restore-summary) :first-user)
-                   "[image]"))))
+(ert-deftest agent-shell--pending-restore-keeps-single-prompt-turn-together ()
+  "Test consecutive `user_message_chunk's stay in the same prompt turn."
+  (let ((state (list (cons :pending-restore (agent-shell--make-pending-restore)))))
+    (dolist (notif (list
+                    (agent-shell-tests--make-session-update "user_message_chunk" "Hello ")
+                    (agent-shell-tests--make-session-update "user_message_chunk" "world")))
+      (agent-shell--append-restore-notification state notif))
+    (should (= 1 (length (agent-shell-tests--pending-restore-prompt-turns state))))))
 
 (ert-deftest agent-shell--use-session-load-p-modes ()
   "Test `agent-shell--use-session-load-p' across context/protocol combinations."
@@ -3047,7 +3064,7 @@ KIND is a sessionUpdate string such as \"user_message_chunk\"."
                         (cons :supports-session-list t)
                         (cons :supports-session-load t)
                         (cons :supports-session-resume t)
-                        (cons :restore-summary nil)
+                        (cons :pending-restore nil)
                         (cons :active-requests nil)
                         (cons :event-subscriptions nil))))
       (setq-local agent-shell--state state)
@@ -3086,7 +3103,7 @@ KIND is a sessionUpdate string such as \"user_message_chunk\"."
                                (nreverse requests))
                        '("session/list" "session/load")))
         (should session-init-called)
-        (should-not (map-elt agent-shell--state :restore-summary))))))
+        (should-not (map-elt agent-shell--state :pending-restore))))))
 
 (provide 'agent-shell-tests)
 ;;; agent-shell-tests.el ends here

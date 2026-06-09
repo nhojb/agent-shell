@@ -628,16 +628,21 @@ configuration alist for backwards compatibility."
   `minimal': Show only the session title (default).  Uses
              `session/resume' when supported (no message replay),
              so restore is fast and quiet.
-  `first-last': Use `session/load', when the replay completes,
-             render the first user prompt and the last agent
-             text response.  Other notifications (tool calls,
-             thoughts) are suppressed during restore.
+  `last':    Use `session/load' and render only the last prompt
+             turn (one user prompt and the agent's response).
+             When earlier turns exist, a `truncated history'
+             separator is shown above the rendered turn.
+  `first-last': Use `session/load' and render only the first and
+             last prompt turns.  When more than two turns exist,
+             a `truncated history' separator is shown between
+             them.
   `full':    Use `session/load' and replay the entire conversation.
 
-`first-last' and `full' both require the agent to advertise
-`session/load' support.  When unavailable, restore falls back
-to `minimal' behavior."
+`last', `first-last', and `full' all require the agent to
+advertise `session/load' support.  When unavailable, restore
+falls back to `minimal' behavior."
   :type '(choice (const :tag "Title only (minimal)" minimal)
+                 (const :tag "Last response (last)" last)
                  (const :tag "First prompt + last response (first-last)" first-last)
                  (const :tag "Full replay" full))
   :group 'agent-shell)
@@ -852,7 +857,7 @@ OUTGOING-REQUEST-DECORATOR (passed through to `acp-make-client')."
         (cons :supports-session-fork nil)
         (cons :resume-session-id nil)
         (cons :fork-session-id nil)
-        (cons :restore-summary nil)
+        (cons :pending-restore nil)
         (cons :prompt-capabilities nil)
         (cons :event-subscriptions nil)
         (cons :idle-timer nil)
@@ -1612,48 +1617,10 @@ Flow:
                                (unless command
                                  (agent-shell-heartbeat-stop
                                   :heartbeat (map-elt agent-shell--state :heartbeat))
-                                 (when (seq-empty-p (map-elt (agent-shell--state) :available-commands))
-                                   ;; Setting an "available commands" placeholder fragment before
-                                   ;; displaying the prompt (shell-maker-finish-output).
-                                   ;; This enables updating the placeholder even if the notification
-                                   ;; arrives after bootstrapping prompt is displayed.
-                                   (agent-shell--update-fragment
-                                    :state (agent-shell--state)
-                                    :namespace-id "bootstrapping"
-                                    :block-id "available_commands_update"
-                                    :label-left (propertize "Available /commands" 'font-lock-face 'font-lock-doc-markup-face)))
-                                 (when (and (map-nested-elt (agent-shell--state) '(:agent-config :default-model-id))
-                                            (funcall (map-nested-elt (agent-shell--state)
-                                                                     '(:agent-config :default-model-id)))
-                                            (not (map-elt (agent-shell--state) :set-model)))
-                                   ;; Setting a "Setting model" placeholder fragment before
-                                   ;; displaying the prompt (shell-maker-finish-output).
-                                   ;; This enables updating the placeholder even if the response
-                                   ;; arrives after bootstrapping prompt is displayed.
-                                   (agent-shell--update-fragment
-                                    :state (agent-shell--state)
-                                    :namespace-id "bootstrapping"
-                                    :block-id "set-model"
-                                    :label-left (propertize "Setting model" 'font-lock-face 'font-lock-doc-markup-face)
-                                    :body (format "Requesting %s..."
-                                                  (funcall (map-nested-elt (agent-shell--state)
-                                                                           '(:agent-config :default-model-id))))))
-                                 (when (and (map-nested-elt (agent-shell--state) '(:agent-config :default-session-mode-id))
-                                            (funcall (map-nested-elt (agent-shell--state)
-                                                                     '(:agent-config :default-session-mode-id)))
-                                            (not (map-elt (agent-shell--state) :set-session-mode)))
-                                   ;; Setting a "Setting session mode" placeholder fragment before
-                                   ;; displaying the prompt (shell-maker-finish-output).
-                                   ;; This enables updating the placeholder even if the response
-                                   ;; arrives after bootstrapping prompt is displayed.
-                                   (agent-shell--update-fragment
-                                    :state (agent-shell--state)
-                                    :namespace-id "bootstrapping"
-                                    :block-id "set-session-mode"
-                                    :label-left (propertize "Setting session mode" 'font-lock-face 'font-lock-doc-markup-face)
-                                    :body (format "Requesting %s..."
-                                                  (funcall (map-nested-elt (agent-shell--state)
-                                                                           '(:agent-config :default-session-mode-id))))))
+                                 ;; Place these before `shell-maker-finish-output' so
+                                 ;; that late-arriving notifications/responses update
+                                 ;; them in place instead of inserting past the prompt.
+                                 (agent-shell--create-bootstrapping-placeholders (agent-shell--state))
                                  (shell-maker-finish-output :config shell-maker--config
                                                             :success nil)
                                  (agent-shell--emit-event :event 'prompt-ready))
@@ -1832,11 +1799,12 @@ pretty-printed JSON inside a json fence."
           :above-last-prompt t))
         ((equal (map-elt acp-notification 'method) "session/update")
          (cond
-          ;; Restore-summary mode: buffer chunks during session/load
-          ;; and suppress normal rendering.  The summary fragments are
-          ;; emitted once the load completes.
-          ((map-elt state :restore-summary)
-           (agent-shell--restore-summary-handle-notification state acp-notification))
+          ;; Pending-restore: accumulate notifications during
+          ;; session/load and suppress normal rendering.  Once the
+          ;; load completes, the first and last prompt turns are
+          ;; replayed through the normal dispatch path.
+          ((map-elt state :pending-restore)
+           (agent-shell--append-restore-notification state acp-notification))
           ((equal (map-nested-elt acp-notification '(params update sessionUpdate)) "tool_call")
            (agent-shell--save-tool-call
             state
@@ -2704,6 +2672,33 @@ DIFF should be in the form returned by `agent-shell--make-diff-info':
               (map-merge 'alist old-tool-call tool-call-overrides)
             tool-call-overrides))
     (map-put! state :tool-calls updated-tools)))
+
+(cl-defun agent-shell--make-boxed-message (&key text width)
+  "Return TEXT framed in a rounded Unicode box.
+When WIDTH is nil, the box auto-sizes to fit TEXT (respecting any
+existing newlines).  Otherwise the box is WIDTH columns wide and TEXT
+is word-wrapped to fit — the usable text area is WIDTH - 4 columns
+\(two for the `│' borders and two for the one-column padding on each
+side)."
+  (let* ((lines (if width
+                    (with-temp-buffer
+                      (insert text)
+                      (let ((fill-column (max 1 (- width 4))))
+                        (fill-region (point-min) (point-max)))
+                      (split-string (buffer-string) "\n"))
+                  (split-string text "\n")))
+         (text-width (apply #'max 1 (mapcar #'string-width lines)))
+         (inner-width (+ text-width 2))
+         (middle (mapconcat
+                  (lambda (line)
+                    (concat "│ " line
+                            (make-string
+                             (- text-width (string-width line)) ?\s)
+                            " │"))
+                  lines "\n")))
+    (concat "╭" (make-string inner-width ?─) "╮\n"
+            middle "\n"
+            "╰" (make-string inner-width ?─) "╯")))
 
 (cl-defun agent-shell--make-error-dialog-text (&key code message raw-message)
   "Create formatted error dialog text with CODE, MESSAGE, and RAW-MESSAGE."
@@ -5048,6 +5043,43 @@ Falls back to latest session in batch mode (e.g. tests)."
    :state agent-shell--state
    :acp-config-options (map-elt acp-response 'configOptions)))
 
+(defun agent-shell--create-bootstrapping-placeholders (state)
+  "Create placeholder fragments in STATE's `bootstrapping' namespace.
+
+Ensures fragments exist for notifications and responses arriving
+after bootstrapping, so they update existing fragments in place
+rather than inserting new ones at point-max.
+
+Idempotent: re-calling with the same STATE either skips or
+overwrites an existing fragment with equivalent content."
+  (when (seq-empty-p (map-elt state :available-commands))
+    (agent-shell--update-fragment
+     :state state
+     :namespace-id "bootstrapping"
+     :block-id "available_commands_update"
+     :label-left (propertize "Available /commands"
+                             'font-lock-face 'font-lock-doc-markup-face)))
+  (when-let* ((id-fn (map-nested-elt state '(:agent-config :default-model-id)))
+              (model-id (funcall id-fn))
+              ((not (map-elt state :set-model))))
+    (agent-shell--update-fragment
+     :state state
+     :namespace-id "bootstrapping"
+     :block-id "set-model"
+     :label-left (propertize "Setting model"
+                             'font-lock-face 'font-lock-doc-markup-face)
+     :body (format "Requesting %s..." model-id)))
+  (when-let* ((id-fn (map-nested-elt state '(:agent-config :default-session-mode-id)))
+              (mode-id (funcall id-fn))
+              ((not (map-elt state :set-session-mode))))
+    (agent-shell--update-fragment
+     :state state
+     :namespace-id "bootstrapping"
+     :block-id "set-session-mode"
+     :label-left (propertize "Setting session mode"
+                             'font-lock-face 'font-lock-doc-markup-face)
+     :body (format "Requesting %s..." mode-id))))
+
 (defun agent-shell--display-session-options ()
   "Display available session options during bootstrapping."
   (when (agent-shell--config-options agent-shell--state)
@@ -5131,14 +5163,14 @@ Falls back to latest session in batch mode (e.g. tests)."
 
 `agent-shell-session-restore-verbosity' decides the protocol:
 
-  `first-last' and `full' force `session/load' when the agent
-  advertises it (so a replay is available to read from); they
-  fall back to `session/resume' otherwise.
+  `last', `first-last', and `full' force `session/load' when the
+  agent advertises it (so a replay is available to read from);
+  they fall back to `session/resume' otherwise.
 
   `minimal' uses `session/resume' when available, falling back
   to `session/load' only if the agent doesn't support resume."
   (cond
-   ((and (memq agent-shell-session-restore-verbosity '(first-last full))
+   ((and (memq agent-shell-session-restore-verbosity '(last first-last full))
          (map-elt state :supports-session-load))
     t)
    ((map-elt state :supports-session-resume)
@@ -5146,97 +5178,129 @@ Falls back to latest session in batch mode (e.g. tests)."
    (t
     (map-elt state :supports-session-load))))
 
-(defun agent-shell--restore-summary-mode-p (state)
-  "Return non-nil when STATE should accumulate a restore summary.
+(defun agent-shell--has-pending-restore-p (state)
+  "Return non-nil when STATE should buffer notifications during restore.
 
-Only true when `agent-shell-session-restore-verbosity' is `first-last' and the
-agent supports `session/load' (so a replay is available to read
-from)."
-  (and (eq agent-shell-session-restore-verbosity 'first-last)
+Only true when `agent-shell-session-restore-verbosity' is `last'
+or `first-last' and the agent supports `session/load' (so the
+buffered prompt turns can be replayed after the load completes)."
+  (and (memq agent-shell-session-restore-verbosity '(last first-last))
        (map-elt state :supports-session-load)))
 
-(defun agent-shell--restore-summary-init (state)
-  "Initialize the restore-summary accumulator on STATE."
-  (map-put! state :restore-summary
-            (list (cons :current-kind nil)
-                  (cons :current-text nil)
-                  (cons :first-user nil)
-                  (cons :last-agent nil))))
+(defun agent-shell--make-pending-restore ()
+  "Return a fresh pending-restore accumulator.
 
-(defun agent-shell--restore-summary-commit-in-flight (summary)
-  "Commit the in-flight chunk of SUMMARY to first-user or last-agent.
+Buffers `session/update' notifications grouped by prompt turn so
+the first and last turns can be replayed once `session/load'
+completes."
+  (list (cons :prompt-turns (list nil))
+        (cons :in-agent-response nil)))
 
-The first user message is preserved across commits.  The agent
-message is overwritten on each commit so the latest reply wins."
-  (let ((kind (map-elt summary :current-kind))
-        (text (map-elt summary :current-text)))
-    (when (and kind text (not (string-empty-p text)))
-      (pcase kind
-        ('user
-         (unless (map-elt summary :first-user)
-           (map-put! summary :first-user text)))
-        ('agent
-         (map-put! summary :last-agent text))))
-    (map-put! summary :current-kind nil)
-    (map-put! summary :current-text nil)))
+(defun agent-shell--append-restore-notification (state acp-notification)
+  "Append ACP-NOTIFICATION into STATE's pending-restore accumulator.
 
-(defun agent-shell--restore-summary-append (summary kind text)
-  "Append TEXT to SUMMARY's in-flight chunk, switching to KIND if needed.
+Groups notifications by prompt turn.  A new turn begins when a
+`user_message_chunk' arrives after agent activity (agent
+message, thought, tool call, or plan) — i.e. the user sending a
+fresh prompt in reply to the agent.  Notifications without a
+boundary effect are appended to the current turn.
 
-KIND is `user' or `agent'.  When KIND differs from the current
-in-flight kind, the previous chunk is committed first."
-  (unless (eq (map-elt summary :current-kind) kind)
-    (agent-shell--restore-summary-commit-in-flight summary)
-    (map-put! summary :current-kind kind)
-    (map-put! summary :current-text ""))
-  (map-put! summary :current-text
-            (concat (map-elt summary :current-text) text)))
+Example.  After appending notifications of these `sessionUpdate'
+kinds in order (each NAME below stands for the full notification):
 
-(defun agent-shell--restore-summary-handle-notification (state acp-notification)
-  "Route ACP-NOTIFICATION into STATE's restore-summary accumulator.
+  user_message_chunk, agent_message_chunk, user_message_chunk
 
-`user_message_chunk' and `agent_message_chunk' contribute text;
-any other `session/update' commits the in-flight chunk so the
-boundary between consecutive same-kind chunks is preserved."
-  (let* ((summary (map-elt state :restore-summary))
-         (update-type (map-nested-elt acp-notification '(params update sessionUpdate)))
-         (text (or (map-nested-elt acp-notification '(params update content text))
-                   (format "[%s]" (or (map-nested-elt acp-notification '(params update content type))
-                                      "unknown")))))
-    (pcase update-type
-      ("user_message_chunk"
-       (agent-shell--restore-summary-append summary 'user text))
-      ("agent_message_chunk"
-       (agent-shell--restore-summary-append summary 'agent text))
-      (_
-       (agent-shell--restore-summary-commit-in-flight summary)))))
+STATE's `:pending-restore' `:prompt-turns' holds (newest turn
+first, newest notification within first):
 
-(defun agent-shell--render-restore-summary (state)
-  "Render the accumulated restore-summary fragments from STATE.
+  ((user_message_chunk)
+   (agent_message_chunk user_message_chunk))"
+  (let* ((pending (map-elt state :pending-restore))
+         (prompt-turns (map-elt pending :prompt-turns))
+         (in-agent-response (map-elt pending :in-agent-response))
+         (update-type (map-nested-elt acp-notification '(params update sessionUpdate))))
+    (cond
+     ((equal update-type "user_message_chunk")
+      (when in-agent-response
+        (push nil prompt-turns)
+        (setq in-agent-response nil)))
+     ((member update-type '("agent_message_chunk" "agent_thought_chunk"
+                            "tool_call" "tool_call_update" "plan"))
+      (setq in-agent-response t)))
+    (push acp-notification (car prompt-turns))
+    (map-put! pending :prompt-turns prompt-turns)
+    (map-put! pending :in-agent-response in-agent-response)))
 
-Adds an `First prompt' fragment for the first user message and
-a `Last response' fragment for the latest agent text reply, then
-clears the summary state.  Does nothing if neither was captured."
-  (when-let ((summary (map-elt state :restore-summary)))
-    (agent-shell--restore-summary-commit-in-flight summary)
-    (when-let ((text (map-elt summary :first-user)))
-      (agent-shell--update-fragment
-       :state state
-       :namespace-id "bootstrapping"
-       :block-id "restore_summary_first_user"
-       :label-left (propertize "First prompt" 'font-lock-face 'font-lock-doc-markup-face)
-       :body text
-       :expanded t))
-    (when-let ((text (map-elt summary :last-agent)))
-      (agent-shell--update-fragment
-       :state state
-       :namespace-id "bootstrapping"
-       :block-id "restore_summary_last_agent"
-       :label-left (propertize "Last response" 'font-lock-face 'font-lock-doc-markup-face)
-       :body text
-       :expanded t
-       :render-body-images t))
-    (map-put! state :restore-summary nil)))
+(defun agent-shell--pop-pending-restore (state)
+  "Clear STATE's pending-restore and return its prompt turns.
+
+Returns turns in chronological order (oldest first), with each
+turn's notifications in arrival order and empty turns filtered
+out.  Returns nil when nothing was buffered."
+  (prog1 (seq-filter
+          #'identity
+          (nreverse
+           (mapcar #'nreverse
+                   (map-nested-elt state '(:pending-restore :prompt-turns)))))
+    (map-put! state :pending-restore nil)))
+
+(defun agent-shell--replay-turn (state turn)
+  "Dispatch each notification in TURN through STATE's notification handler."
+  (dolist (notification turn)
+    (agent-shell--on-notification :state state :acp-notification notification)))
+
+(defun agent-shell--render-pending-restore (state)
+  "Replay buffered prompt turns in STATE's pending-restore.
+
+Honors `agent-shell-session-restore-verbosity':
+
+  `last': renders the last prompt turn, preceded by a
+          `truncated history' separator when earlier turns exist.
+
+  `first-last': renders the first turn, then a separator when
+          more than two turns exist, then the last turn (when
+          distinct from the first).
+
+Notifications are dispatched through `agent-shell--on-notification'
+so they render as they would during a live turn.  Clears the
+pending-restore state once replay completes."
+  (when-let* ((prompt-turns (agent-shell--pop-pending-restore state)))
+    ;; Pre-create bootstrapping placeholders so replayed
+    ;; notifications (e.g. `available_commands_update') update
+    ;; them in place instead of inserting at point-max — which
+    ;; would land past the restored conversation.
+    (agent-shell--create-bootstrapping-placeholders state)
+    ;; Temporarily restore the session/load request so handlers
+    ;; that gate on `:active-requests' (out-of-turn check,
+    ;; `user_message_chunk' rendering, etc.) treat the replayed
+    ;; notifications as if they arrived during the live load.
+    (let ((saved-active-requests (map-elt state :active-requests))
+          (count (length prompt-turns)))
+      (map-put! state :active-requests
+                (cons (list (cons :method "session/load")) saved-active-requests))
+      (unwind-protect
+          (pcase agent-shell-session-restore-verbosity
+            ('last
+             (when (> count 1)
+               (agent-shell--update-fragment
+                :state state
+                :namespace-id "bootstrapping"
+                :block-id "restore_truncated_history"
+                :body (agent-shell--make-boxed-message
+                       :text "Note: truncated history (last only)")))
+             (agent-shell--replay-turn state (car (last prompt-turns))))
+            ('first-last
+             (agent-shell--replay-turn state (car prompt-turns))
+             (when (> count 2)
+               (agent-shell--update-fragment
+                :state state
+                :namespace-id "bootstrapping"
+                :block-id "restore_truncated_history"
+                :body (agent-shell--make-boxed-message
+                       :text "Note: truncated history (first and last only)")))
+             (when (> count 1)
+               (agent-shell--replay-turn state (car (last prompt-turns))))))
+        (map-put! state :active-requests saved-active-requests)))))
 
 (cl-defun agent-shell--initiate-session-resume-by-id (&key session-id session-title shell-buffer on-session-init)
   "Resume or load session SESSION-ID with SHELL-BUFFER and ON-SESSION-INIT.
@@ -5249,8 +5313,9 @@ SESSION-TITLE is an optional display title for the resumed session."
    :body (format "\n\nLoading session %s..." session-id)
    :append t)
   (let ((use-load (agent-shell--use-session-load-p (agent-shell--state))))
-    (when (and use-load (agent-shell--restore-summary-mode-p (agent-shell--state)))
-      (agent-shell--restore-summary-init (agent-shell--state)))
+    (when (and use-load (agent-shell--has-pending-restore-p (agent-shell--state)))
+      (map-put! (agent-shell--state) :pending-restore
+                (agent-shell--make-pending-restore)))
     (agent-shell--send-request
      :state (agent-shell--state)
      :client (map-elt (agent-shell--state) :client)
@@ -5279,10 +5344,14 @@ SESSION-TITLE is an optional display title for the resumed session."
                                         (propertize "Resuming session" 'font-lock-face 'font-lock-doc-markup-face))
                     :expanded t
                     :body (or session-title session-id ""))
-                   (agent-shell--render-restore-summary (agent-shell--state))
-                   (agent-shell--finalize-session-init :on-session-init on-session-init))
+                   ;; Replay after bootstrapping fragments (e.g. `Available
+                   ;; models') so they sit above the restored conversation.
+                   (agent-shell--finalize-session-init
+                    :on-session-init (lambda ()
+                                       (agent-shell--render-pending-restore (agent-shell--state))
+                                       (funcall on-session-init))))
      :on-failure (lambda (_acp-error _raw-message)
-                   (map-put! (agent-shell--state) :restore-summary nil)
+                   (map-put! (agent-shell--state) :pending-restore nil)
                    (message "Couldn't resume session. Starting a new one.")
                    (agent-shell--update-fragment
                     :state (agent-shell--state)
@@ -5377,8 +5446,9 @@ SESSION-TITLE is an optional display title for the resumed session."
                                     :body (format "\n\nLoading session %s..." acp-session-id)
                                     :append t)
                                    (when (and use-load
-                                              (agent-shell--restore-summary-mode-p (agent-shell--state)))
-                                     (agent-shell--restore-summary-init (agent-shell--state)))
+                                              (agent-shell--has-pending-restore-p (agent-shell--state)))
+                                     (map-put! (agent-shell--state) :pending-restore
+                                               (agent-shell--make-pending-restore)))
                                    (agent-shell--send-request
                                     :state (agent-shell--state)
                                     :client (map-elt (agent-shell--state) :client)
@@ -5407,10 +5477,15 @@ SESSION-TITLE is an optional display title for the resumed session."
                                                                        (propertize "Resuming session" 'font-lock-face 'font-lock-doc-markup-face))
                                                    :expanded t
                                                    :body (or (map-elt acp-session 'title) ""))
-                                                  (agent-shell--render-restore-summary (agent-shell--state))
-                                                  (agent-shell--finalize-session-init :on-session-init on-session-init))
+                                                  ;; Replay after bootstrapping fragments (e.g.
+                                                  ;; `Available models') so they sit above the
+                                                  ;; restored conversation.
+                                                  (agent-shell--finalize-session-init
+                                                   :on-session-init (lambda ()
+                                                                      (agent-shell--render-pending-restore (agent-shell--state))
+                                                                      (funcall on-session-init))))
                                     :on-failure (lambda (_acp-error _raw-message)
-                                                  (map-put! (agent-shell--state) :restore-summary nil)
+                                                  (map-put! (agent-shell--state) :pending-restore nil)
                                                   (agent-shell--update-fragment
                                                    :state (agent-shell--state)
                                                    :namespace-id "bootstrapping"
