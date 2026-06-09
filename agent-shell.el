@@ -5,7 +5,7 @@
 ;; Author: Alvaro Ramirez https://xenodium.com
 ;; URL: https://github.com/xenodium/agent-shell
 ;; Version: 0.54.1
-;; Package-Requires: ((emacs "29.1") (shell-maker "0.92.2") (acp "0.12.2"))
+;; Package-Requires: ((emacs "29.1") (shell-maker "0.93.1") (acp "0.12.2"))
 
 (defconst agent-shell--version "0.54.1")
 
@@ -1806,6 +1806,19 @@ pretty-printed JSON inside a json fence."
           :append t
           :above-last-prompt t))
         ((equal (map-elt acp-notification 'method) "session/update")
+         ;; Replayed user_message_chunks aren't followed by
+         ;; shell-maker's end-of-prompt marker (no real
+         ;; `comint-send-input').  Insert it on the first
+         ;; non-user_message_chunk after a user prompt so
+         ;; `shell-maker--extract-history' can pair the command with
+         ;; its response.  Skipped while pending-restore is buffering
+         ;; (nothing is being rendered yet).
+         (when (and (not (map-elt state :pending-restore))
+                    (equal (map-elt state :last-entry-type) "user_message_chunk")
+                    (not (equal (map-nested-elt acp-notification '(params update sessionUpdate))
+                                "user_message_chunk")))
+           (with-current-buffer (map-elt state :buffer)
+             (shell-maker-insert-end-of-prompt-marker)))
          (cond
           ;; Pending-restore: accumulate notifications during
           ;; session/load and suppress normal rendering.  Once the
@@ -1934,10 +1947,17 @@ pretty-printed JSON inside a json fence."
                 :block-id (format "%s-user_message_chunk"
                                   (map-elt state :chunked-group-count))
                 :text (if new-prompt-p
+                          ;; Match the field/face shape comint emits for
+                          ;; a live prompt: prefix is `field=output' (so
+                          ;; comint-next-prompt treats it as a prompt
+                          ;; boundary), user text has no `field' (sits
+                          ;; in the input region just like one the user
+                          ;; just typed).
                           (concat (propertize
                                    (map-nested-elt
                                     state '(:agent-config :shell-prompt))
-                                   'font-lock-face 'comint-highlight-prompt)
+                                   'font-lock-face 'comint-highlight-prompt
+                                   'field 'output)
                                   (propertize content-text
                                               'font-lock-face 'comint-highlight-input))
                         (propertize content-text
@@ -3541,17 +3561,13 @@ APPEND and CREATE-NEW control update behavior."
            :no-undo t))))
     (with-current-buffer (map-elt state :buffer)
       (shell-maker-with-auto-scroll-edit
-       (when-let* ((range (agent-shell-ui-update-text
-                           :namespace-id ns
-                           :block-id block-id
-                           :text text
-                           :append append
-                           :create-new create-new
-                           :no-undo t))
-                   (block-start (map-nested-elt range '(:block :start)))
-                   (block-end (map-nested-elt range '(:block :end))))
-         (let ((inhibit-read-only t))
-           (add-text-properties block-start block-end '(field output))))))))
+       (agent-shell-ui-update-text
+        :namespace-id ns
+        :block-id block-id
+        :text text
+        :append append
+        :create-new create-new
+        :no-undo t)))))
 
 (defun agent-shell-toggle-logging ()
   "Toggle logging."
