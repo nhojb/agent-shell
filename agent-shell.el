@@ -7792,6 +7792,53 @@ Optionally, get notified of completion with ON-SUCCESS function."
      :thought-level-id selected-id
      :on-success on-success)))
 
+(defvar agent-shell--session-config-option-choices nil
+  "Config choices used by the current session config option completion session.")
+
+(defun agent-shell--session-config-option-annotation (name)
+  "Return completion annotation for session config option NAME."
+  (when-let* ((option (map-elt agent-shell--session-config-option-choices name)))
+    (concat
+     "  (current: "
+     (or (agent-shell--config-option-value-name
+          option
+          (map-elt option :current-value))
+         "")
+     ") "
+     (or (map-elt option :description) ""))))
+
+(defun agent-shell--session-config-option-table (string pred action)
+  "Complete session config options for STRING, PRED, and ACTION."
+  (if (eq action 'metadata)
+      '(metadata
+        (annotation-function . agent-shell--session-config-option-annotation)
+        (eager-display . t))
+    (complete-with-action action agent-shell--session-config-option-choices string pred)))
+
+(defvar agent-shell--session-config-value-choices nil
+  "Value choices used by the current session config value completion session.")
+
+(defvar agent-shell--session-config-current-value nil
+  "Current value for the active session config value completion.")
+
+(defun agent-shell--session-config-value-annotation (name)
+  "Return completion annotation for session config value NAME."
+  (when-let* ((value (map-elt agent-shell--session-config-value-choices name)))
+    (concat
+     (if (equal (map-elt value :value) agent-shell--session-config-current-value)
+         "  [current]"
+       "   ")
+     (when-let* ((description (map-elt value :description)))
+       (concat " " description)))))
+
+(defun agent-shell--session-config-value-table (string pred action)
+  "Complete session config values for STRING, PRED, and ACTION."
+  (if (eq action 'metadata)
+      '(metadata
+        (annotation-function . agent-shell--session-config-value-annotation)
+        (eager-display . t))
+    (complete-with-action action agent-shell--session-config-value-choices string pred)))
+
 (defun agent-shell-set-session-config-option (&optional on-success)
   "Set a session config option.
 
@@ -7805,34 +7852,39 @@ with ON-SUCCESS function."
     (user-error "No active session"))
   (unless (agent-shell--select-config-options (agent-shell--state))
     (user-error "No session config options available"))
-  (let* ((config-choices (mapcar (lambda (option)
-                                   (cons (map-elt option :name)
-                                         option))
-                                 (agent-shell--select-config-options (agent-shell--state))))
+  (let* ((agent-shell--session-config-option-choices
+          (mapcar (lambda (option)
+                    (cons (map-elt option :name)
+                          option))
+                  (agent-shell--select-config-options (agent-shell--state))))
          (config-selection (completing-read "Set session option: "
-                                            (mapcar #'car config-choices)
+                                            #'agent-shell--session-config-option-table
                                             nil t))
          (selected-config-option (cdr (seq-find (lambda (choice)
                                                   (string= config-selection (car choice)))
-                                                config-choices))))
+                                                agent-shell--session-config-option-choices))))
     (unless selected-config-option
       (user-error "Unknown session config option: %s" config-selection))
-    (let* ((value-choices (mapcar (lambda (value)
-                                    (cons (map-elt value :name)
-                                          (map-elt value :value)))
-                                  (map-elt selected-config-option :options)))
+    (let* ((agent-shell--session-config-value-choices
+            (mapcar (lambda (value)
+                      (cons (map-elt value :name)
+                            value))
+                    (map-elt selected-config-option :options)))
+           (agent-shell--session-config-current-value
+            (map-elt selected-config-option :current-value))
            (default-value-name (agent-shell--config-option-value-name
                                 selected-config-option
-                                (map-elt selected-config-option :current-value)))
+                                agent-shell--session-config-current-value))
            (value-selection (completing-read "Set value: "
-                                             (mapcar #'car value-choices)
+                                             #'agent-shell--session-config-value-table
                                              nil t nil nil default-value-name))
-           (selected-value (cdr (seq-find (lambda (choice)
-                                            (string= value-selection (car choice)))
-                                          value-choices))))
+           (selected-value (map-elt (cdr (seq-find (lambda (choice)
+                                                     (string= value-selection (car choice)))
+                                                   agent-shell--session-config-value-choices))
+                                    :value)))
       (unless selected-value
         (user-error "Unknown session config value: %s" value-selection))
-      (when (equal selected-value (map-elt selected-config-option :current-value))
+      (when (equal selected-value agent-shell--session-config-current-value)
         (error "%s already %s" config-selection value-selection))
       (agent-shell--set-session-config-option
        :config-id (map-elt selected-config-option :id)
