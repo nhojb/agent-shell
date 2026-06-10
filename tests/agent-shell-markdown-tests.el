@@ -144,12 +144,16 @@ after **b2**"))
                    ("b" (agent-shell-markdown-bold))
                    ("
 " nil)
+                   ("
+" (agent-shell-markdown-source-block))
                    ("snippet ⧉" (agent-shell-markdown-source-block-language))
                    ("
 
 **not bold**
 _not italic_
-after " nil)
+
+" (agent-shell-markdown-source-block))
+                   ("after " nil)
                    ("b2" (agent-shell-markdown-bold))))))
 
 (ert-deftest agent-shell-markdown-convert-open-fence-protects-rest ()
@@ -220,17 +224,22 @@ after [c](w)"))
                    ("a" (agent-shell-markdown-link))
                    ("
 " nil)
+                   ("
+" (agent-shell-markdown-source-block))
                    ("snippet ⧉" (agent-shell-markdown-source-block-language))
                    ("
 
 [b](v)
-after " nil)
+
+" (agent-shell-markdown-source-block))
+                   ("after " nil)
                    ("c" (agent-shell-markdown-link))))))
 
 (ert-deftest agent-shell-markdown-convert-source-block-no-language ()
   ;; Plain fenced block (no language): fences deleted, a "snippet ⧉"
   ;; header is inserted directly above the body as real buffer text
-  ;; (no display property), and the body chars carry the
+  ;; (no display property), bracketed by tinted vpad newlines so the
+  ;; panel reads as a contiguous block.  Body chars carry the
   ;; `agent-shell-markdown-frozen' tag (not surfaced by
   ;; `--deconstruct').
   (should (equal (agent-shell-markdown--deconstruct
@@ -238,18 +247,22 @@ after " nil)
                    "```
 body
 ```"))
-                 '(("snippet ⧉" (agent-shell-markdown-source-block-language))
+                 '(("
+" (agent-shell-markdown-source-block))
+                   ("snippet ⧉" (agent-shell-markdown-source-block-language))
                    ("
 
 body
-" nil)))))
+
+" (agent-shell-markdown-source-block))))))
 
 (ert-deftest agent-shell-markdown-convert-source-block-language-label ()
   ;; Every fence renders with an actionable label inserted as real
   ;; buffer text directly above the body — "LANG ⧉" when a language
   ;; is declared, "snippet ⧉" otherwise.  No display property, no
-  ;; overlays, no bg panel.  RET or mouse-1 anywhere on the label
-  ;; kills the body to the kill ring.
+  ;; overlays.  The label sits between tinted vpad newlines that
+  ;; make the surrounding panel read as a contiguous block.  RET or
+  ;; mouse-1 anywhere on the label kills the body to the kill ring.
   (let* ((with-lang (agent-shell-markdown-convert "```python
 print(\"hi\")
 ```
@@ -258,13 +271,15 @@ print(\"hi\")
 body
 ```
 ")))
-    (should (string-prefix-p "python ⧉\n\nprint("
+    (should (string-prefix-p "\npython ⧉\n\nprint("
                              (substring-no-properties with-lang)))
-    (should (string-prefix-p "snippet ⧉\n\nbody"
+    (should (string-prefix-p "\nsnippet ⧉\n\nbody"
                              (substring-no-properties no-lang)))
     ;; Label face + actionable props on both the first name char and
-    ;; the ⧉ glyph.
-    (dolist (i '(0 7))
+    ;; the ⧉ glyph.  The leading char is the tinted vpad `\\n', so the
+    ;; label starts at index 1; "python " is 7 chars, so the ⧉ glyph
+    ;; sits at index 8.
+    (dolist (i '(1 8))
       (should (eq (get-text-property i 'face with-lang)
                   'agent-shell-markdown-source-block-language))
       (should (eq (get-text-property i 'mouse-face with-lang)
@@ -287,42 +302,54 @@ body
 print(\"hi\")
 ```
 ````"))))
-    (should (equal rendered "markdown ⧉
+    (should (equal rendered "
+markdown ⧉
 
 ```python
 print(\"hi\")
 ```
+
 "))))
 
 (ert-deftest agent-shell-markdown-convert-source-block-with-language ()
   ;; `emacs-lisp' source block: fences deleted, an "emacs-lisp ⧉"
-  ;; header is inserted as buffer text, then the body chars get the
-  ;; language's `font-lock' faces.  In batch the keyword `if' is
-  ;; faced; the rest of the body stays unfaced (no bg panel).
+  ;; header is inserted as buffer text bracketed by tinted vpad
+  ;; newlines, then the body chars get the language's `font-lock'
+  ;; faces layered over the `agent-shell-markdown-source-block' bg.
+  ;; In batch the keyword `if' is faced; the rest of the body stays
+  ;; with just the panel bg.
   (should (equal (agent-shell-markdown--deconstruct
                   (agent-shell-markdown-convert
                    "```emacs-lisp
 (if t nil)
 ```"))
-                 '(("emacs-lisp ⧉" (agent-shell-markdown-source-block-language))
+                 '(("
+" (agent-shell-markdown-source-block))
+                   ("emacs-lisp ⧉" (agent-shell-markdown-source-block-language))
                    ("
 
-(" nil)
-                   ("if" (font-lock-keyword-face))
+(" (agent-shell-markdown-source-block))
+                   ("if" (font-lock-keyword-face agent-shell-markdown-source-block))
                    (" t nil)
-" nil)))))
+
+" (agent-shell-markdown-source-block))))))
 
 (ert-deftest agent-shell-markdown-convert-source-block-body-tagged ()
   ;; Body chars carry `agent-shell-markdown-frozen t' so subsequent calls
-  ;; treat them as an avoid-range (streaming-safe).  Body in the
-  ;; rendered output is "**not bold**" followed by a newline — the
-  ;; chars before that trailing newline are tagged; the newline
-  ;; itself is not.
+  ;; treat them as an avoid-range (streaming-safe).  Rendered output
+  ;; is `\\n<label>\\n\\n<body>\\n\\n' — the label and body chars are
+  ;; tagged; the bracketing vpad `\\n's are not (they're styling, not
+  ;; protected content).
   (let ((s (agent-shell-markdown-convert "```
 **not bold**
 ```")))
-    (should (eq t (get-text-property 0 'agent-shell-markdown-frozen s)))
-    (should (eq t (get-text-property 5 'agent-shell-markdown-frozen s)))
+    ;; Leading vpad `\\n' is not frozen.
+    (should (null (get-text-property 0 'agent-shell-markdown-frozen s)))
+    ;; Label start char "s" of "snippet" is frozen.
+    (should (eq t (get-text-property 1 'agent-shell-markdown-frozen s)))
+    ;; A body char ("n" in "**not bold**") is frozen.
+    (should (eq t (get-text-property 14 'agent-shell-markdown-frozen s)))
+    ;; Trailing vpad `\\n' is not frozen.
     (should (null (get-text-property (1- (length s)) 'agent-shell-markdown-frozen s)))))
 
 (ert-deftest agent-shell-markdown-convert-inline-code-body-tagged ()
@@ -349,10 +376,12 @@ print(\"hi\")
       (insert chunk)
       (agent-shell-markdown-replace-markup))
     (should (equal (substring-no-properties (buffer-string))
-                   "python ⧉
+                   "
+python ⧉
 
 print(\"hi\")
 raise SystemExit
+
 "))))
 
 (ert-deftest agent-shell-markdown-source-block-body-protected-across-calls ()
@@ -370,11 +399,15 @@ raise SystemExit
 **real bold**")
     (agent-shell-markdown-replace-markup)
     (should (equal (agent-shell-markdown--deconstruct (buffer-string))
-                   '(("snippet ⧉" (agent-shell-markdown-source-block-language))
+                   '(("
+" (agent-shell-markdown-source-block))
+                     ("snippet ⧉" (agent-shell-markdown-source-block-language))
                      ("
 
 **not bold**
 
+" (agent-shell-markdown-source-block))
+                     ("
 " nil)
                      ("real bold" (agent-shell-markdown-bold)))))))
 
@@ -950,11 +983,15 @@ A " nil)
              (".
 
 " nil)
+             ("
+" (agent-shell-markdown-source-block))
              ("snippet ⧉" (agent-shell-markdown-source-block-language))
              ("
 
 **not bold**
 
+" (agent-shell-markdown-source-block))
+             ("
 ![alt](/missing).
 
 " nil)
