@@ -248,7 +248,8 @@ are applied.  Each function is called with a range alist containing:
   :type 'boolean
   :group 'agent-shell)
 
-(cl-defun agent-shell--markdown-overlays-put (&key render-images highlight-blocks)
+(cl-defun agent-shell--markdown-overlays-put (&key render-images highlight-blocks
+                                                   &allow-other-keys)
   "Deprecated overlay-based markdown renderer.
 
 Wraps `markdown-overlays-put' from the `markdown-overlays' package
@@ -270,11 +271,12 @@ settled and `markdown-overlays' is no longer a dependency."
   #'agent-shell-markdown-replace-markup
   "Function called to render markdown in the current narrowed buffer.
 
-The function accepts `&key render-images highlight-blocks' and is
-expected to render markdown in the current buffer.  Callers narrow
-the buffer to the target span (eg. a fragment body or label)
-before calling, so the function can scan the whole accessible
-portion.
+The function accepts `&key render-images highlight-blocks
+image-cache-directory' (use `&allow-other-keys' to tolerate keys a
+renderer ignores) and is expected to render markdown in the
+current buffer.  Callers narrow the buffer to the target span
+(eg. a fragment body or label) before calling, so the function can
+scan the whole accessible portion.
 
 Two implementations ship with agent-shell:
 
@@ -289,7 +291,8 @@ Two implementations ship with agent-shell:
     overlays).  Faster on streaming workloads by rewriting buffer.
 
 Set to a custom function to plug in a different renderer; the
-function should accept `&key render-images highlight-blocks'."
+function should accept `&key render-images highlight-blocks
+image-cache-directory &allow-other-keys'."
   :type 'function
   :group 'agent-shell)
 
@@ -301,10 +304,14 @@ Dispatches to `agent-shell-markdown-render-function', forwarding
 RENDER-IMAGES and HIGHLIGHT-BLOCKS.  HIGHLIGHT-BLOCKS defaults to
 the current value of `agent-shell-highlight-blocks' so most call
 sites can omit it; RENDER-IMAGES defaults to t, override with nil
-on label spans where images shouldn't appear."
+on label spans where images shouldn't appear.
+
+Passes agent-shell's own cache directory as the renderer's remote-image
+cache so downloaded images share `agent-shell--cache-dir'."
   (funcall agent-shell-markdown-render-function
            :render-images render-images
-           :highlight-blocks highlight-blocks))
+           :highlight-blocks highlight-blocks
+           :image-cache-directory (agent-shell--cache-dir "content-images")))
 
 (defcustom agent-shell-confirm-interrupt t
   "Whether to prompt for confirmation before interrupting.
@@ -5856,7 +5863,7 @@ Example:
               (extension (pcase mime-type
                            ("image/svg+xml" "svg")
                            (_ (string-remove-prefix "image/" mime-type))))
-              ((member extension image-file-name-extensions))
+              ((seq-contains-p image-file-name-extensions extension))
               (file (expand-file-name
                      (format "%s.%s" (md5 data) extension)
                      (agent-shell--cache-dir "content-images"))))
@@ -5873,9 +5880,13 @@ is \"image\", e.g. an agent returning a screenshot) return a markdown image
 so the existing image-rendering path (`agent-shell--render-markdown' with
 :render-images t) displays them inline rather than dropping them.
 
-An image block may carry its payload as a `uri' (used directly) or as
-base64 `data' (the spec-required field, decoded to a cache file when no
-`uri' is present).  An image block with neither returns an empty string.
+An image block may carry its payload as a `uri' or as base64 `data' (the
+spec-required field).  A `uri' (local or remote) is emitted verbatim and
+resolved by the renderer, which downloads remote uris on demand (see
+`agent-shell-markdown--resolve-image-url').  Base64 `data' is decoded to a
+local cache file and emitted as a bare path (not a `file://' URI) so the
+renderer resolves it without URI parsing.  An image block with no renderable
+payload returns an empty string.
 
 Any other block type (audio, resource, resource_link, or a future type we
 don't render yet) returns a \"[unsupported content: TYPE]\" placeholder, so
@@ -5893,21 +5904,14 @@ Examples:
   (pcase (map-elt content-block 'type)
     ("text" (or (map-elt content-block 'text) ""))
     ("image"
-     (cond
-      ((map-elt content-block 'uri)
-       (format "\n\n![%s](%s)\n\n"
-               (or (map-elt content-block 'name) "image")
-               (map-elt content-block 'uri)))
-      ;; Emit the bare absolute path (not a `file://' URI): it is a local
-      ;; cache file, and the renderer resolves absolute paths without URI
-      ;; parsing, so a cache dir containing `#' or spaces still renders.
-      ((when-let* ((file (agent-shell--image-data-to-file
-                          (map-elt content-block 'data)
-                          (map-elt content-block 'mimeType))))
+     (if-let* ((source (or (map-elt content-block 'uri)
+                           (agent-shell--image-data-to-file
+                            (map-elt content-block 'data)
+                            (map-elt content-block 'mimeType)))))
          (format "\n\n![%s](%s)\n\n"
                  (or (map-elt content-block 'name) "image")
-                 file)))
-      (t "")))
+                 source)
+       ""))
     (type (format "[unsupported content: %s]" (or type "unknown")))))
 
 (cl-defun agent-shell--collect-attached-files (content-blocks)

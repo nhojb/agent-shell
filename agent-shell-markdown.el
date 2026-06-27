@@ -61,6 +61,7 @@
 (require 'map)
 (require 'seq)
 (require 'org-faces)
+(require 'url)
 (require 'url-parse)
 (require 'url-util)
 
@@ -208,7 +209,8 @@ For example:
 
 (cl-defun agent-shell-markdown-replace-markup (&key force
                                                     (render-images t)
-                                                    (highlight-blocks t))
+                                                    (highlight-blocks t)
+                                                    image-cache-directory)
   "Replace Markdown markup in current buffer with propertized text.
 
 Rewrites the buffer in place: markup characters are removed and
@@ -239,7 +241,10 @@ non-nil to drop the watermark and re-render the whole buffer
 
 RENDER-IMAGES, when non-nil (the default), replaces `![alt](url)'
 markup with displayed images where the URL resolves to an image
-file; nil leaves the markup as-is.  HIGHLIGHT-BLOCKS, when non-nil
+file; nil leaves the markup as-is.  IMAGE-CACHE-DIRECTORY is where
+remote (http) image URLs are downloaded and cached; when nil
+\(the default), remote images are not fetched and their markup is
+left as text.  HIGHLIGHT-BLOCKS, when non-nil
 (the default), runs the fenced-block body through the language's
 major-mode font-lock to colour keywords / strings / etc.; nil
 strips the fences and inserts the action label but leaves the
@@ -274,7 +279,9 @@ body un-fontified."
           (agent-shell-markdown--style-inline-code :avoid-ranges source-ranges)
           (agent-shell-markdown--replace-links :avoid-ranges avoid-ranges)
           (when render-images
-            (agent-shell-markdown--replace-images :avoid-ranges avoid-ranges)
+            (agent-shell-markdown--replace-images
+             :avoid-ranges avoid-ranges
+             :image-cache-directory image-cache-directory)
             (agent-shell-markdown--replace-image-file-paths
              :avoid-ranges avoid-ranges))
           (agent-shell-markdown--style-dividers :avoid-ranges avoid-ranges)
@@ -550,15 +557,23 @@ and a keymap that opens the URL."
                                     (agent-shell-markdown--open-link url))))
               (put-text-property markup-start end 'mouse-face 'highlight)))))))))
 
-(cl-defun agent-shell-markdown--replace-images (&key avoid-ranges)
+(cl-defun agent-shell-markdown--replace-images (&key avoid-ranges image-cache-directory)
   "Replace `![alt](url)' image markup with displayed images.
 
 If URL resolves to an existing local file that is image-supported
 and a graphical display is available, the full markup is replaced
 by the alt text (or a single space if alt is empty) carrying a
 `display' property with the image and a keymap that opens the
-file on RET or mouse-1.  Otherwise the markup is left untouched.
-Images inside any of AVOID-RANGES are left alone.
+file on RET or mouse-1.  Remote (http) URLs are downloaded into
+IMAGE-CACHE-DIRECTORY first (see
+`agent-shell-markdown--fetch-remote-image').
+
+When a remote image can't be shown inline (no IMAGE-CACHE-DIRECTORY,
+the download failed, or a non-graphical display), its markup is
+replaced by a link -- the alt text, or the URL when alt is empty --
+faced as `agent-shell-markdown-link' with a keymap that opens the
+URL on RET or mouse-1.  Any other unresolvable markup is left
+untouched.  Images inside any of AVOID-RANGES are left alone.
 
 For example, the buffer \"see ![logo](logo.png)\" becomes
 \"see logo\" with the image shown in place of \"logo\"."
@@ -584,10 +599,12 @@ For example, the buffer \"see ![logo](logo.png)\" becomes
                        (match-beginning 1) (match-end 1)))
                  (url (buffer-substring-no-properties
                        (match-beginning 2) (match-end 2)))
-                 (path (agent-shell-markdown--resolve-image-url url)))
-            (when (and path
-                       (image-supported-file-p path)
-                       (display-graphic-p))
+                 (path (agent-shell-markdown--resolve-image-url
+                        url image-cache-directory)))
+            (cond
+             ((and path
+                   (image-supported-file-p path)
+                   (display-graphic-p))
               (let ((image (create-image
                             path nil nil
                             :max-width (agent-shell-markdown--image-max-width)))
@@ -608,7 +625,22 @@ For example, the buffer \"see ![logo](logo.png)\" becomes
                   (when line-prefix
                     (put-text-property markup-start end 'line-prefix line-prefix))
                   (when wrap-prefix
-                    (put-text-property markup-start end 'wrap-prefix wrap-prefix))))))))))))
+                    (put-text-property markup-start end 'wrap-prefix wrap-prefix)))))
+             ;; Remote image we couldn't show inline (no cache configured, the
+             ;; download failed, or a non-graphical display): render a link
+             ;; that opens the url, rather than leaving raw `![alt](url)' text.
+             ((string-match-p "\\`https?://" url)
+              (delete-region markup-start markup-end)
+              (goto-char markup-start)
+              (let* ((label (if (string-empty-p alt) url alt))
+                     (end (+ markup-start (length label))))
+                (insert label)
+                (add-face-text-property markup-start end 'agent-shell-markdown-link)
+                (put-text-property markup-start end 'keymap
+                                   (agent-shell-markdown--make-ret-binding-map
+                                    (lambda () (interactive)
+                                      (agent-shell-markdown--open-link url))))
+                (put-text-property markup-start end 'mouse-face 'highlight)))))))))))
 
 (cl-defun agent-shell-markdown--replace-image-file-paths (&key avoid-ranges)
   "Render bare image-path lines as displayed images.
@@ -2100,24 +2132,82 @@ For example:
             (when (cdr match)
               (string-to-number (cdr match)))))))
 
-(defun agent-shell-markdown--resolve-image-url (url)
+(cl-defun agent-shell-markdown--url-copy-file (&key url file (timeout 5.0) content-type-prefix)
+  "Download URL to FILE, returning FILE on success or nil on failure.
+
+A hardened `url-copy-file': the fetch is synchronous but bounded by TIMEOUT
+seconds (`url-copy-file' itself has no timeout), the response must be HTTP
+200, and -- when CONTENT-TYPE-PREFIX is non-nil -- its `Content-Type' must
+start with that prefix (e.g. \"image/\").  FILE is left untouched unless the
+response passes every check, so an error page is never written in place of
+the expected content.  Returns nil rather than signaling on any failure."
+  (when-let* ((buffer (url-retrieve-synchronously url t t timeout)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (goto-char (point-min))
+          (when (and (re-search-forward "^HTTP/[0-9.]+ 200" nil t)
+                     (or (not content-type-prefix)
+                         (save-excursion
+                           (re-search-forward
+                            (concat "^Content-Type:[ \t]*" (regexp-quote content-type-prefix))
+                            nil t)))
+                     (re-search-forward "\r?\n\r?\n" nil t))
+            (make-directory (file-name-directory file) t)
+            (let ((coding-system-for-write 'no-conversion))
+              (write-region (point) (point-max) file))
+            file))
+      (kill-buffer buffer))))
+
+(defun agent-shell-markdown--fetch-remote-image (url image-cache-directory)
+  "Download the remote image at URL into IMAGE-CACHE-DIRECTORY; return its path.
+
+Returns the local cache file path, or nil when IMAGE-CACHE-DIRECTORY is nil,
+URL is not an http(s) image URL, the download fails, or the response isn't
+an image.  Remote images are only fetched when an IMAGE-CACHE-DIRECTORY is
+provided, so a renderer with no cache configured leaves remote image markup
+as text.  The cache file is named from URL's md5 so the same URL is fetched
+at most once.  Only URLs ending in a known image extension are fetched, and
+the response must carry an `image/...' Content-Type before it is cached (see
+`agent-shell-markdown--url-copy-file'), so an error page is never stored as
+an image."
+  (when-let* (((stringp url))
+              ((stringp image-cache-directory))
+              ((string-match-p "\\`https?://" url))
+              (extension (downcase (or (file-name-extension
+                                        (replace-regexp-in-string "[?#].*\\'" "" url))
+                                       "")))
+              ((seq-contains-p image-file-name-extensions extension))
+              (cache-path (expand-file-name
+                           (format "%s.%s" (md5 url) extension)
+                           image-cache-directory)))
+    (if (file-exists-p cache-path)
+        cache-path
+      (agent-shell-markdown--url-copy-file :url url
+                                           :file cache-path
+                                           :content-type-prefix "image/"))))
+
+(defun agent-shell-markdown--resolve-image-url (url &optional image-cache-directory)
   "Resolve image URL to an absolute local file path, or nil.
-Handles file:// URIs, absolute paths, and paths starting with
-`~/', `./', or `../'."
-  (when-let* ((path (cond
-                     ((string-prefix-p "file://" url)
-                      (url-unhex-string
-                       (url-filename (url-generic-parse-url url))))
-                     ((string-prefix-p "file:" url)
-                      (substring url (length "file:")))
-                     ((or (file-name-absolute-p url)
-                          (string-prefix-p "~" url)
-                          (string-prefix-p "./" url)
-                          (string-prefix-p "../" url))
-                      url)))
-              (expanded (expand-file-name path))
-              ((file-exists-p expanded)))
-    expanded))
+Handles http(s) URLs (downloaded into IMAGE-CACHE-DIRECTORY and cached via
+`agent-shell-markdown--fetch-remote-image'; not fetched when
+IMAGE-CACHE-DIRECTORY is nil), file:// URIs, absolute paths, and paths
+starting with `~/', `./', or `../'."
+  (if (string-match-p "\\`https?://" url)
+      (agent-shell-markdown--fetch-remote-image url image-cache-directory)
+    (when-let* ((path (cond
+                       ((string-prefix-p "file://" url)
+                        (url-unhex-string
+                         (url-filename (url-generic-parse-url url))))
+                       ((string-prefix-p "file:" url)
+                        (substring url (length "file:")))
+                       ((or (file-name-absolute-p url)
+                            (string-prefix-p "~" url)
+                            (string-prefix-p "./" url)
+                            (string-prefix-p "../" url))
+                        url)))
+                (expanded (expand-file-name path))
+                ((file-exists-p expanded)))
+      expanded)))
 
 (defun agent-shell-markdown--image-max-width ()
   "Return the maximum image width in pixels.

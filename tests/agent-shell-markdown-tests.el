@@ -214,6 +214,22 @@ streaming **not bold**" nil)))))
                   (agent-shell-markdown-convert "see ![alt](/no/such/file.png) end"))
                  '(("see ![alt](/no/such/file.png) end" nil)))))
 
+(ert-deftest agent-shell-markdown-convert-remote-image-falls-back-to-link ()
+  ;; A remote image that can't be shown inline (no cache configured, and a
+  ;; non-graphical display in batch) becomes a clickable link, not raw markup.
+  (should (equal (agent-shell-markdown--deconstruct
+                  (agent-shell-markdown-convert
+                   "see ![docs](https://example.com/a.png) end"))
+                 '(("see " nil)
+                   ("docs" (agent-shell-markdown-link))
+                   (" end" nil)))))
+
+(ert-deftest agent-shell-markdown-convert-remote-image-empty-alt-uses-url ()
+  ;; With no alt text, the link label is the URL itself.
+  (should (equal (agent-shell-markdown--deconstruct
+                  (agent-shell-markdown-convert "![](https://example.com/a.png)"))
+                 '(("https://example.com/a.png" (agent-shell-markdown-link))))))
+
 (ert-deftest agent-shell-markdown-convert-link-in-fenced-block-untouched ()
   ;; The `[b](v)' inside fences stays literal — it isn't re-processed
   ;; as a link.  Body chars carry the `agent-shell-markdown-frozen'
@@ -1269,6 +1285,120 @@ A " nil)
     (agent-shell-markdown-replace-markup :force t)
     (should-not (string-match-p "\\*\\*"
                                 (substring-no-properties (buffer-string))))))
+
+(ert-deftest agent-shell-markdown--url-copy-file-test ()
+  "Test `agent-shell-markdown--url-copy-file'.
+
+Synchronously downloads a URL to a file, validating HTTP 200 and an optional
+Content-Type prefix before writing.  `url-retrieve-synchronously' is stubbed
+so the test never touches the network."
+  (let* ((make-response
+          (lambda (status content-type body)
+            (lambda (&rest _)
+              (let ((buffer (generate-new-buffer " *fake-http*")))
+                (with-current-buffer buffer
+                  (set-buffer-multibyte nil)
+                  (insert (format "HTTP/1.1 %s\r\nContent-Type: %s\r\n\r\n"
+                                  status content-type))
+                  (insert body))
+                buffer))))
+         (dest (make-temp-file "agent-shell-url-copy")))
+    (unwind-protect
+        (progn
+          ;; 200 + matching Content-Type prefix -> writes body, returns dest.
+          (delete-file dest)
+          (cl-letf (((symbol-function 'url-retrieve-synchronously)
+                     (funcall make-response "200 OK" "image/png" "PNGBYTES")))
+            (should (equal (agent-shell-markdown--url-copy-file
+                            :url "https://example.com/a.png" :file dest
+                            :content-type-prefix "image/")
+                           dest))
+            (should (file-exists-p dest)))
+
+          ;; No Content-Type prefix -> any 200 response is written.
+          (delete-file dest)
+          (cl-letf (((symbol-function 'url-retrieve-synchronously)
+                     (funcall make-response "200 OK" "text/plain" "hello")))
+            (should (equal (agent-shell-markdown--url-copy-file
+                            :url "https://example.com/a" :file dest)
+                           dest))
+            (should (file-exists-p dest)))
+
+          ;; 200 but Content-Type prefix mismatch -> nil, nothing written.
+          (delete-file dest)
+          (cl-letf (((symbol-function 'url-retrieve-synchronously)
+                     (funcall make-response "200 OK" "text/html" "<html>nope</html>")))
+            (should-not (agent-shell-markdown--url-copy-file
+                         :url "https://example.com/a" :file dest
+                         :content-type-prefix "image/"))
+            (should-not (file-exists-p dest)))
+
+          ;; Non-200 -> nil, nothing written.
+          (cl-letf (((symbol-function 'url-retrieve-synchronously)
+                     (funcall make-response "404 Not Found" "image/png" "x")))
+            (should-not (agent-shell-markdown--url-copy-file
+                         :url "https://example.com/a.png" :file dest
+                         :content-type-prefix "image/"))
+            (should-not (file-exists-p dest)))
+
+          ;; Connection failure (nil buffer) -> nil, nothing written.
+          (cl-letf (((symbol-function 'url-retrieve-synchronously)
+                     (lambda (&rest _) nil)))
+            (should-not (agent-shell-markdown--url-copy-file
+                         :url "https://example.com/a.png" :file dest))
+            (should-not (file-exists-p dest))))
+      (when (file-exists-p dest) (delete-file dest)))))
+
+(ert-deftest agent-shell-markdown--fetch-remote-image-test ()
+  "Test `agent-shell-markdown--fetch-remote-image'.
+
+Owns the image policy (http-only, known image extension, md5-named cache);
+the download itself is delegated to `agent-shell-markdown--url-copy-file',
+which is stubbed here so the test exercises only the policy."
+  ;; With a CACHE-DIRECTORY: cached path requested from the downloader and
+  ;; returned, under that directory.
+  (cl-letf (((symbol-function 'agent-shell-markdown--url-copy-file)
+             (lambda (&rest args) (plist-get args :file))))
+    (let ((file (agent-shell-markdown--fetch-remote-image
+                 "https://example.com/a.png" "/tmp/img-cache")))
+      (should (string-prefix-p "/tmp/img-cache/" file))
+      (should (string-suffix-p ".png" file))
+      (should (string-match-p "/[0-9a-f]+\\.png\\'" file))))
+
+  ;; Without a CACHE-DIRECTORY: remote images are not fetched.
+  (cl-letf (((symbol-function 'agent-shell-markdown--url-copy-file)
+             (lambda (&rest _) (error "should not download"))))
+    (should-not (agent-shell-markdown--fetch-remote-image "https://example.com/a.png" nil)))
+
+  ;; A failed download -> nil (no silent path returned).
+  (cl-letf (((symbol-function 'agent-shell-markdown--url-copy-file)
+             (lambda (&rest _) nil)))
+    (should-not (agent-shell-markdown--fetch-remote-image "https://example.com/b.png" "/tmp/img-cache")))
+
+  ;; Non-http uris and extensionless urls are never downloaded.
+  (cl-letf (((symbol-function 'agent-shell-markdown--url-copy-file)
+             (lambda (&rest _) (error "should not download"))))
+    (should-not (agent-shell-markdown--fetch-remote-image "file:///tmp/x.png" "/tmp/img-cache"))
+    (should-not (agent-shell-markdown--fetch-remote-image "https://example.com/img?id=1" "/tmp/img-cache"))))
+
+(ert-deftest agent-shell-markdown--resolve-image-url-remote-test ()
+  "Test that `agent-shell-markdown--resolve-image-url' fetches http(s) urls.
+
+A remote url is resolved through `agent-shell-markdown--fetch-remote-image'
+\(stubbed), forwarding the injected cache directory; local-path resolution is
+unaffected."
+  (cl-letf (((symbol-function 'agent-shell-markdown--fetch-remote-image)
+             (lambda (url image-cache-directory)
+               (and (string-match-p "\\`https?://" url) image-cache-directory
+                    (format "%s/x.png" image-cache-directory)))))
+    ;; Remote url -> fetched; the image-cache-directory argument is forwarded.
+    (should (equal (agent-shell-markdown--resolve-image-url
+                    "https://example.com/x.png" "/injected")
+                   "/injected/x.png"))
+    ;; No image-cache-directory -> remote image is not fetched (nil).
+    (should-not (agent-shell-markdown--resolve-image-url "https://example.com/x.png"))
+    ;; A non-existent local path still resolves to nil (no fetch attempted).
+    (should-not (agent-shell-markdown--resolve-image-url "/no/such/file.png"))))
 
 (provide 'agent-shell-markdown-tests)
 

@@ -426,9 +426,8 @@ image-rendering path as `![alt](uri)'."
                       (uri . "file:///tmp/x.png")))
                    "")))
 
-  ;; A remote (http) uri is passed through verbatim.  The renderer only
-  ;; resolves local paths, so it won't inline-render today; this pins the
-  ;; pass-through until remote fetching is added.
+  ;; A uri -- local or remote -- is emitted verbatim; the renderer resolves
+  ;; it (downloading remote uris on demand), so conversion stays I/O-free.
   (should (equal (agent-shell--content-block-to-markdown
                   '((type . "image")
                     (mimeType . "image/png")
