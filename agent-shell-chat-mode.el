@@ -40,8 +40,10 @@
 ;;; Code:
 
 (require 'agent-shell-faces)
+(require 'color)
 (require 'map)
 (require 'seq)
+(require 'svg nil :noerror)
 (eval-when-compile
   (require 'cl-lib)
   (require 'subr-x))
@@ -100,6 +102,14 @@ dots)."
                  (function :tag "Function"))
   :group 'agent-shell)
 
+(defcustom agent-shell-chat-mode-rounded-labels t
+  "Whether chat labels render as badges with rounded corners.
+Drawn as SVG images on graphical frames that support them.  Elsewhere,
+and when nil, labels are drawn as text in their face (see
+`agent-shell-chat-me-label')."
+  :type 'boolean
+  :group 'agent-shell)
+
 ;;; Constants
 
 (defconst agent-shell-chat--prompt "❯ "
@@ -152,8 +162,92 @@ A hint only: see `agent-shell-chat--find-live-marker-overlay'.")
 FACE carries the box (see `agent-shell-chat-me-label').
 
 For example, (agent-shell-chat--label \"Me\" \\='agent-shell-chat-me-label)
-returns \" Me \" in that face."
-  (propertize (format " %s " text) 'face face))
+returns \" Me \" in that face.
+
+With `agent-shell-chat-mode-rounded-labels' on a frame that can draw SVG, the
+same string is displayed as a rounded badge instead (see
+`agent-shell-chat--label-image')."
+  (if-let* ((image (and agent-shell-chat-mode-rounded-labels
+                        (display-graphic-p)
+                        (fboundp 'svg-create)
+                        (image-type-available-p 'svg)
+                        (agent-shell-chat--label-image text face))))
+      ;; Faced `default' rather than FACE, whose background would fill
+      ;; in the image's transparent corners.
+      (propertize (format " %s " text) 'face 'default 'display image)
+    (propertize (format " %s " text) 'face face)))
+
+(defun agent-shell-chat--hex-color (name)
+  "Return color NAME as an `#rrggbb' hex string, or nil if unknown.
+SVG does not know Emacs color names (e.g. \"Green3\")."
+  (when-let* (((stringp name))
+              (rgb (color-name-to-rgb name)))
+    (apply #'color-rgb-to-hex (append rgb '(2)))))
+
+(defun agent-shell-chat--label-image (text face)
+  "Return an SVG image drawing TEXT as a rounded badge in FACE, or nil.
+
+Sized to the padded label it stands in for (TEXT plus a column either
+side) at the current buffer's default font, `text-scale-adjust'
+included.  Colored as FACE would paint it, honoring `:inverse-video'.
+
+Returns nil when FACE's colors cannot be resolved."
+  (let* ((inverse (face-inverse-video-p face nil t))
+         (foreground (agent-shell-chat--hex-color
+                      (face-foreground face nil 'default)))
+         (background (agent-shell-chat--hex-color
+                      (face-background face nil 'default))))
+    (when (and foreground background)
+      (let* ((fill (if inverse foreground background))
+             (ink (if inverse background foreground))
+             (char-width (default-font-width))
+             (height (default-font-height))
+             (width (* char-width (+ 2 (string-width text))))
+             ;; The default font's pixel size, scaled by `text-scale-adjust'
+             ;; as `default-font-height' is.
+             (font-size (round (* (or (when-let* ((font (face-attribute 'default :font))
+                                                  ((fontp font))
+                                                  (size (font-get font :size))
+                                                  ((numberp size))
+                                                  ((> size 0)))
+                                        size)
+                                      (* 0.8 (frame-char-height)))
+                                  (/ (float height) (frame-char-height)))))
+             (bold (memq (face-attribute face :weight nil t)
+                         '(bold extra-bold ultra-bold heavy black semi-bold)))
+             (svg (svg-create width height)))
+        (svg-rectangle svg 0 0 width height
+                       :rx (/ height 2) :fill fill)
+        (svg-text svg text
+                  :x (/ width 2.0) :y (- (/ height 2.0) 0.5)
+                  :text-anchor "middle"
+                  :dominant-baseline "central"
+                  :font-family (face-attribute 'default :family nil t)
+                  :font-size font-size
+                  :font-weight (if bold "bold" "normal")
+                  :fill ink)
+        ;; Sized from the font already, so `image-scaling-factor' must not
+        ;; scale it again.
+        (svg-image svg :ascent 'center :scale 1)))))
+
+(defun agent-shell-chat--row-props (row)
+  "Return overlay properties drawing label ROW on the position it covers.
+
+A row is normally the overlay's `display'.  Emacs ignores `display'
+properties nested inside a `display' string, though, so a row holding a
+badge image (see `agent-shell-chat--label') is drawn as a `before-string'
+instead, with `display' left to its line terminator.
+
+For example, over \" Me \\n\" in plain text returns
+\((display . \" Me \\n\") (before-string . \"\"))."
+  (if (text-property-not-all 0 (length row) 'display nil row)
+      (let ((terminated (string-suffix-p "\n" row)))
+        (list (cons 'display (if terminated "\n" ""))
+              (cons 'before-string (if terminated
+                                       (substring row 0 -1)
+                                     row))))
+    (list (cons 'display row)
+          (cons 'before-string ""))))
 
 (defun agent-shell-chat--busy-frame ()
   "Return the busy frame for the heartbeat's current beat, or nil when idle.
@@ -806,17 +900,17 @@ above, putting the first line of a multi-line input out of reach of
                     (agent-shell-chat--ensure-overlay
                      :tag 'me-label
                      :beg (+ pos offset) :end (+ pos offset 1)
-                     ;; Above the overlay covering the prompt, whose
-                     ;; `line-prefix' would otherwise indent the label with
-                     ;; the input it belongs beside.
-                     :props (list (cons 'display row)
-                                  ;; Spelled out so that a reused overlay
-                                  ;; cannot keep a label drawn the other way
-                                  ;; (see `agent-shell-chat--ensure-overlay').
-                                  (cons 'before-string "")
-                                  (cons 'priority 100)
-                                  (cons 'line-prefix "")
-                                  (cons 'wrap-prefix "")))
+                     ;; Both `display' and `before-string' are spelled out
+                     ;; so that a reused overlay cannot keep a label drawn
+                     ;; the other way (see `agent-shell-chat--ensure-overlay').
+                     :props (append
+                             (agent-shell-chat--row-props row)
+                             ;; Above the overlay covering the prompt, whose
+                             ;; `line-prefix' would otherwise indent the label
+                             ;; with the input it belongs beside.
+                             (list (cons 'priority 100)
+                                   (cons 'line-prefix "")
+                                   (cons 'wrap-prefix ""))))
                     kept))
                  label-rows)
               (push
@@ -1033,11 +1127,10 @@ newline would merge the input line into the response for line motion
                      ;; either draws with.
                      :tag 'agent
                      :beg (+ start offset) :end (+ start offset 1)
-                     :props (list (cons 'display row)
-                                  ;; Clears the label the version before
-                                  ;; carried whole on this overlay.
-                                  (cons 'before-string "")
-                                  (cons 'priority 100)))
+                     ;; `before-string' is spelled out to clear the label
+                     ;; the version before carried whole on this overlay.
+                     :props (append (agent-shell-chat--row-props row)
+                                    (list (cons 'priority 100))))
                     kept))
                  rows))
               (push
@@ -1119,7 +1212,7 @@ replaced by the label, a blank line, and the marker the input follows:
 
    Me
 
-    \N{U+276F} "
+    \N{U+276F}"
   (let ((overlay (make-overlay beg end)))
     (overlay-put overlay 'agent-shell-chat--tag 'me)
     (overlay-put overlay 'display "")
